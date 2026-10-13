@@ -37,6 +37,13 @@ void SensingLogic::serviceWatchdog(bool contactLost) {
   }
 }
 
+void SensingLogic::raiseLocalFault() {
+  if (state_ != SENSING_FAULT) {
+    state_ = SENSING_FAULT;
+    fault_ = FAULT_LOCAL;
+  }
+}
+
 void SensingLogic::encode(uint8_t* bytes, uint32_t uptime) const {
   bytes[OFFSET_STATE] = state_;
   bytes[OFFSET_FAULT] = fault_;
