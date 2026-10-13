@@ -16,7 +16,7 @@ Slaves report what they measure and what they are doing. The master gives those 
 
 Load one puck before reed 1. Run forward. A reed 1 edge records arrival; a reed 2 edge completes magnetic detection. Stop and wait for operator acknowledgement. Then reverse until a new reed 1 edge, run a calibrated discharge overrun and stop. Prepare the next cycle only after both reeds read open.
 
-No reed activity before arrival is normal. There is no no-detection deadline or non-magnetic classification. Operator Stop pauses the current phase. Resume preserves the phase and travel progress. Missing an expected reed causes a latched master FAULT. Remove all pucks and reset the master to clear it. Reset a slave only if it shows its own fault. Never resume a faulted cycle.
+No reed activity before arrival is normal. There is no no-detection deadline or non-magnetic classification. Operator Stop pauses the current phase. Resume preserves the phase and travel progress. Missing an expected reed causes a latched master FAULT. Remove all pucks and reset the master to clear it. Reset a slave only if it shows LOCAL. Never resume a faulted cycle.
 
 ## Wire format
 
@@ -53,7 +53,7 @@ A direction change requires confirmed STOPPED first. No speed command exists in 
 
 ## Slave watchdog and faults
 
-After the first status read, no status read for 1,000 ms causes a local FAULT with CONTACT_LOST: the conveyor stops stepping, the sensing board shows red. Reads renew contact but never clear the fault. A slave fault latches until that board is reset. LOCAL covers any other fault the board detects itself. The master never writes a fault into a slave.
+After the first status read, no status read for 1,000 ms causes a local FAULT with CONTACT_LOST: the conveyor stops stepping, the sensing board shows red. When reads resume, the board clears CONTACT_LOST on its own: the conveyor returns to STOPPED and never resumes motion by itself; the sensing board returns to OK. This lets a master reset recover the system. LOCAL covers any fault the board detects in its own hardware; it latches until that board is reset. The master never writes a fault into a slave.
 
 ## Sensing LEDs
 
@@ -64,7 +64,7 @@ Green while reed 1 reads closed. Amber while reed 2 reads closed. Red while the 
 1. Boot: request stop. Require fresh conveyor STOPPED, sensing OK and both reeds open before READY. Absent slaves wait without fault.
 2. Poll sensing then conveyor every 100 ms in every master state.
 3. Send a motion command once. Confirm it only from a reply received after it was sent, within 300 ms. Retry only `s`, once per poll, until confirmed. Never extend the original deadline.
-4. Mark feedback UNKNOWN after 300 ms without a valid reply. Invalid length, values or reserved bits cause FAULT. A counter that decreases without a detected reboot causes FAULT. UNKNOWN during a cycle causes FAULT; UNKNOWN in INITIALISING, READY or BENCH only blocks progress.
+4. Mark feedback UNKNOWN after 300 ms without a valid reply. Invalid length, values or reserved bits cause FAULT. A counter that decreases without a detected reboot causes FAULT. UNKNOWN during a cycle causes FAULT; UNKNOWN in INITIALISING, READY or BENCH only blocks progress. A slave reporting CONTACT_LOST in those states also only blocks progress, because the next reads clear it; any other slave fault, in any state, causes FAULT.
 5. Fault if returned uptime does not advance for 300 ms. A slave reboot during a cycle causes FAULT; in INITIALISING or READY it returns the master to INITIALISING.
 6. Start saves both reed edge counts. Arrival is a reed 1 count above that baseline. Magnetic is a reed 2 count above its baseline. A reed 2 rise with no reed 1 rise causes REED_ORDER. Both rising in the same poll counts as magnetic.
 7. At arrival, save the step baseline from the same poll. Apply the forward allowance to reach reed 2. At reverse start, save the step baseline and the reed 1 count. Apply the return allowance to reach a new reed 1 edge. Exceeding an allowance without the expected event causes FAULT in every state, including paused. An expected event seen in the same poll wins over the limit.
@@ -72,7 +72,7 @@ Green while reed 1 reads closed. Amber while reed 2 reads closed. Red while the 
 9. Stop saves the active phase and sends `s` each poll until STOPPED is confirmed. Then the destination is WAIT_ACK if magnetic, CLEARING if the overrun is complete, otherwise PAUSED. Resume re-evaluates the same facts before requesting motion. Baselines survive pauses.
 10. Stop has priority over any other operator command received in the same poll interval.
 11. On system fault: send `s` each poll until a post-fault reply confirms STOPPED, show red on the master andon, latch, and report STOP UNCONFIRMED until the confirmation arrives. No command clears a master fault.
-12. Full reset means stop the drive as needed, remove all pucks and reset the master. Reset a slave only if it reports its own fault.
+12. Full reset means stop the drive as needed, remove all pucks and reset the master. Reset a slave only if it reports LOCAL.
 
 Timing values are bench defaults, not safety guarantees. Software stop is not an emergency-stop system. Step allowances are based on emitted motion; they cannot diagnose a motor that receives steps but does not move.
 

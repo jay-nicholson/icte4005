@@ -11,6 +11,7 @@ static SlaveView sensing;
 static Process process;
 static bool stopRequested;
 static OperatorCommand pendingOperatorCommand;
+static Notice lastNotice;
 static uint32_t lastPollMs;
 static uint32_t lastReportMs;
 
@@ -27,24 +28,37 @@ static void pollSlave(SlaveView& view, uint8_t address, uint8_t replyLength, uin
   uint8_t bytes[MAX_REPLY_LENGTH];
   uint8_t received = wireRead(address, bytes, replyLength);
   if (received == 0) view.noteNoReply(now);
-  else view.noteReply(now, bytes, received > replyLength ? (uint8_t)(replyLength + 1) : received);
+  else view.noteReply(now, bytes, received);
 }
 
 static void queueOperatorCommand(const OperatorCommand& operatorCommand) {
-  if (operatorCommand.kind == OPERATOR_STOP) stopRequested = true;
-  else pendingOperatorCommand = operatorCommand;
+  if (operatorCommand.kind == OPERATOR_STOP) {
+    stopRequested = true;
+    pendingOperatorCommand.kind = OPERATOR_NONE;
+    return;
+  }
+  if (pendingOperatorCommand.kind != OPERATOR_NONE) Serial.println(F("previous command replaced"));
+  pendingOperatorCommand = operatorCommand;
 }
 
 static OperatorCommand takeOperatorCommand() {
   OperatorCommand taken = {OPERATOR_NONE, 0, 0};
   if (stopRequested) {
     stopRequested = false;
+    pendingOperatorCommand.kind = OPERATOR_NONE;
     taken.kind = OPERATOR_STOP;
     return taken;
   }
   taken = pendingOperatorCommand;
   pendingOperatorCommand.kind = OPERATOR_NONE;
   return taken;
+}
+
+static void printNoticeOnChange(Notice notice, bool stateChanged) {
+  if (stateChanged) lastNotice = NOTICE_NONE;
+  if (notice == lastNotice) return;
+  lastNotice = notice;
+  printNotice(notice);
 }
 
 static void showAndon(AndonColour colour) {
@@ -81,6 +95,7 @@ void setup() {
   process.begin(calibration);
   stopRequested = false;
   pendingOperatorCommand.kind = OPERATOR_NONE;
+  lastNotice = NOTICE_NONE;
   lastPollMs = millis();
   shownMasterState = MASTER_FAULT;
   Serial.print(F("MASTER contract v"));
@@ -107,6 +122,7 @@ void loop() {
   pollSlave(conveyor, CONVEYOR_ADDRESS, CONVEYOR_REPLY_LENGTH, now);
 
   OperatorCommand taken = takeOperatorCommand();
+  MasterState stateBefore = process.state();
   ProcessOutput output;
   process.tick(now, conveyor, sensing, taken, output);
   showAndon(process.andon());
@@ -117,7 +133,7 @@ void loop() {
       printSendResult(output.requests[i].address, output.requests[i].command, acknowledged);
     }
   }
-  printNotice(output.notice);
+  printNoticeOnChange(output.notice, process.state() != stateBefore || taken.kind != OPERATOR_NONE);
 
   if (sensing.fresh && (sensing.live != shownLive || sensing.reed1Edges != shownReed1Edges ||
                         sensing.reed2Edges != shownReed2Edges)) {

@@ -43,7 +43,6 @@ struct SlaveView {
   void begin(SlaveKind slaveKind);
   DecodeResult noteReply(uint32_t now, const uint8_t* bytes, uint8_t length);
   void noteNoReply(uint32_t now);
-  bool healthy() const;
   bool inFault() const;
 };
 

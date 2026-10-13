@@ -27,7 +27,7 @@ pio device monitor -d master --port /dev/cu.YOUR_BOARD --baud 115200
 
 State handlers never read the slave views. Each tick computes one `Observation` from the views and the saved baselines: arrived, magnetic, reed order, returned, overdue and overrun complete. Progress checks run on that observation in every cycle state, including STOPPING and PAUSED, before any operator command is handled. Resume uses the same observation to pick the next motion. This is what keeps pause, stop and resume from disagreeing.
 
-A motion command is confirmed only by a reply received after it was sent. Step baselines are taken only from a conveyor reply in the same poll as the reed event. Stop has priority over any other operator command received in the same poll interval.
+A motion command is confirmed only by a reply received after it was sent. Step baselines are taken only from a conveyor reply in the same poll as the reed event. Stop has priority over any other operator command received in the same poll interval and discards it. A slave reporting CONTACT_LOST in INITIALISING, READY or BENCH only blocks progress, since its next reads clear it; any other slave fault, in any state, faults the master. Notices print when they change, not every poll.
 
 ## Serial commands
 
@@ -60,7 +60,7 @@ Off in INITIALISING, READY and BENCH. Green while a cycle is moving or stopping.
 | CLEARING | Stopped; require both reeds open within 300 ms; then READY. |
 | PAUSED | Keep polling; retain phase and baselines. |
 | BENCH | Poll and report only; forward raw operator sends. Reset to leave. |
-| FAULT | Send `s` until a post-fault reply confirms rest; retain reason until master reset. |
+| FAULT | Send `s` until a post-fault reply confirms rest; retain reason until master reset. A master reset recovers, because slaves clear CONTACT_LOST themselves once polling resumes. |
 
 ```mermaid
 stateDiagram-v2

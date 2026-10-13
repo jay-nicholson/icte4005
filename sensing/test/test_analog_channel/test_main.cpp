@@ -1,4 +1,3 @@
-// Unit tests for the Hall/LDR front end. A puck pass is modelled as a smooth bump on the ADC reading.
 #include <math.h>
 #include <unity.h>
 #include "analog_channel.h"
@@ -7,30 +6,28 @@
 static const AnalogChannel::Config HALL = {128, 3, 12, 6, 400, 624, 20};
 static const uint16_t REST = 512;
 
-static uint32_t rngState = 12345;
-static int noise(int amplitude) {  // deterministic, uniform in [-amplitude, +amplitude]
-  rngState ^= rngState << 13;
-  rngState ^= rngState >> 17;
-  rngState ^= rngState << 5;
-  return (int)(rngState % (2 * amplitude + 1)) - amplitude;
+static uint32_t randomState = 12345;
+static int randomNoise(int amplitude) {  // deterministic, uniform in [-amplitude, +amplitude]
+  randomState ^= randomState << 13;
+  randomState ^= randomState >> 17;
+  randomState ^= randomState << 5;
+  return (int)(randomState % (2 * amplitude + 1)) - amplitude;
 }
 
-static uint16_t clampAdc(int value) { return value < 0 ? 0 : (value > 1023 ? 1023 : value); }
+static uint16_t clampToAdcRange(int value) { return value < 0 ? 0 : (value > 1023 ? 1023 : value); }
 
-static void zeroChannel(AnalogChannel& channel, int noiseAmp = 2) {
-  for (int i = 0; i < HALL.zeroSamples; i++) channel.sample(clampAdc(REST + noise(noiseAmp)));
+static void zeroChannel(AnalogChannel& channel, int noiseAmplitude = 2) {
+  for (int i = 0; i < HALL.zeroSamples; i++) channel.sample(clampToAdcRange(REST + randomNoise(noiseAmplitude)));
 }
 
-// Runs one puck pass through `channel` -> SensingLogic and returns the closing edges counted.
-// peak is signed (the sign is the magnet polarity). speedMmS is belt speed; sample period is 2 ms.
 static int passEdges(AnalogChannel& channel, SensingLogic& logic, int peak, float speedMmS, float sigmaMm = 4.7f) {
   uint32_t now = 1000;
   uint16_t before = logic.reed1Edges();
   float span = 6 * sigmaMm;
   float travelled = -span;
   while (travelled < span + 40) {  // run on past the sensor so the channel can release
-    float bump = peak * expf(-(travelled / sigmaMm) * (travelled / sigmaMm));
-    channel.sample(clampAdc((int)(REST + bump + noise(2))));
+    float fieldCounts = peak * expf(-(travelled / sigmaMm) * (travelled / sigmaMm));
+    channel.sample(clampToAdcRange((int)(REST + fieldCounts + randomNoise(2))));
     logic.sample(now, channel.active(), false);
     now += 2;
     travelled += speedMmS * 0.002f;
@@ -38,7 +35,7 @@ static int passEdges(AnalogChannel& channel, SensingLogic& logic, int peak, floa
   return logic.reed1Edges() - before;
 }
 
-void setUp() { rngState = 12345; }
+void setUp() { randomState = 12345; }
 void tearDown() {}
 
 void test_baseline_captured_and_ready() {
@@ -54,7 +51,7 @@ void test_baseline_captured_and_ready() {
 void test_noise_alone_never_triggers() {
   AnalogChannel channel; channel.begin(HALL); zeroChannel(channel);
   for (int i = 0; i < 50000; i++) {
-    channel.sample(clampAdc(REST + noise(5)));
+    channel.sample(clampToAdcRange(REST + randomNoise(5)));
     TEST_ASSERT_FALSE(channel.active());
   }
 }
@@ -94,7 +91,7 @@ void test_hysteresis_stops_chatter() {
 
 void test_unplausible_baseline_faults() {
   AnalogChannel low; low.begin(HALL);
-  for (int i = 0; i < HALL.zeroSamples; i++) low.sample(150);  // unplugged / pulled low
+  for (int i = 0; i < HALL.zeroSamples; i++) low.sample(150);  // pulled low
   TEST_ASSERT_TRUE(low.ready());
   TEST_ASSERT_TRUE(low.fault());
   AnalogChannel jumpy; jumpy.begin(HALL);

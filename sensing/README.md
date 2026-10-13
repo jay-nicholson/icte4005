@@ -16,13 +16,13 @@ A reed is a binary snap switch with mechanical hysteresis, and its trigger depen
 | Low-pass filter | ADC noise and coil pickup must not look like an event. |
 | Absolute deviation | Magnet polarity and orientation stop mattering. |
 | On/off hysteresis | A marginal signal cannot chatter. |
-| Health checks | A pulled-out or shorted sensor latches a LOCAL fault. A disconnected normally-open reed just looks open. |
+| Health checks | A sensor output stuck at either supply rail, or a resting level outside the plausible band at boot, latches a LOCAL fault. |
 
 The existing 20 ms debounce and edge counting in `lib/sensing_logic` run unchanged on the output.
 
 ## Fusion gate (optional, off by default)
 
-`USE_LDR_GATE` in `src/main.cpp`. When true, channel 2 closes only if Hall 2 is active **and** the LDR agrees a puck is physically there. This rejects a stray field at Hall 2 (stepper-coil pickup, a dropped magnet) that the Hall alone cannot tell from a puck. Host tests show the same transient stray pulse faulting the master with the gate off and being ignored with it on.
+`USE_LIGHT_GATE` in `src/main.cpp`. When true, channel 2 closes only if Hall 2 is active **and** the LDR agrees a puck is physically there. The gate is a decision the master cannot see; if it stays in the design, the cleaner form is to report presence as a live bit and let the master apply the rule. Leave it off for the demo. This rejects a stray field at Hall 2 (stepper-coil pickup, a dropped magnet) that the Hall alone cannot tell from a puck. Host tests show the same transient stray pulse faulting the master with the gate off and being ignored with it on.
 
 Limits, stated plainly:
 - The gate cannot reject a stray field that coincides with a **non-magnetic** puck at the station, because the LDR sees "a puck" either way. It narrows the false-trigger window; it does not close it.
@@ -42,12 +42,12 @@ Check the UGN3503UA pin order against its datasheet before powering it: wrong-wa
 
 ## Calibration
 
-Build the calibrate environment (`pio run -d sensing -e calibrate -t upload`) or use the standalone sketch. Open Serial at 9600 baud with the belt clear and magnets away. Keys: `r` resets the peak values, `z` re-zeros the baselines.
+Build the calibrate environment (`pio run -d sensing -e calibrate -t upload`). Open Serial at 9600 baud with the belt clear and magnets away. Keys: `r` resets the peak values, `z` re-zeros the baselines.
 
-1. Press `r` with nothing near the sensors, wait 10 s. The `pk` values are the **noise floor**.
-2. Press `r`, then pass the real puck by each sensor at the gap and speed it will see in the demo. The `pk` value is the **signal peak**. Repeat for the worst case (largest gap, fastest belt, weakest orientation).
+1. Press `r` with nothing near the sensors, wait 10 s. The `peak` values are the **noise floor**.
+2. Press `r`, then pass the real puck by each sensor at the gap and speed it will see in the demo. The `peak` value is the **signal peak**. Repeat for the worst case (largest gap, fastest belt, weakest orientation).
 3. Set `onDelta` to roughly half the weakest signal peak, but at least 3x the noise floor. Set `offDelta` to about half of `onDelta`.
-4. Check the baselines (`b1`, `b2`) sit near 512. If not, adjust `baselineMin/Max` or check the wiring.
+4. Check the baselines (`baseline1`, `baseline2`) sit near 512. If not, adjust `baselineMin/Max` or check the wiring. Zero with the stepper in the same energised state it will have during the run, or a nearby coil field shifts the baseline.
 5. For the LDR, do the same with and without a puck at the station. Only enable the gate if the swing is several times larger than ambient fluctuation.
 
 `sensing/src/main.cpp` ships with **starting values** (`onDelta` 12, `offDelta` 6) that have not been tuned on the assembled belt.
@@ -55,7 +55,7 @@ Build the calibrate environment (`pio run -d sensing -e calibrate -t upload`) or
 ## Code layout
 
 - `lib/analog_channel`: baseline, filter, deviation, hysteresis and health. Pure C++, host-tested.
-- `lib/sensing_logic`: debounce, counters, LED decision, reply encoder. One addition to the original: `raiseLocalFault()`, which latches the contract's existing LOCAL fault and keeps the first fault reason.
+- `lib/sensing_logic`: debounce, counters, LED decision, reply encoder, plus `raiseLocalFault()`, which latches LOCAL and keeps the first fault reason. CONTACT_LOST clears itself when master reads resume; LOCAL does not.
 - `src/main.cpp`: pins, tuning, sampling loop, fusion, LED output, Wire link.
 - `src/calibrate.cpp`: the bench measuring tool, built by the `calibrate` environment.
 - `../shared/slave_link.h`: Wire slave boilerplate, unchanged.
@@ -69,14 +69,17 @@ Green while channel 1 reads closed. Amber while channel 2 reads closed. Red whil
 ## Verification
 
 Recorded on 13 October 2026, host and compiler only:
-- `pio test -d sensing -e native` runs 19 tests: 11 unit tests of the front end and 8 end-to-end tests that drive the **unmodified** master and conveyor logic against a noisy Hall model. Covered: boot zeroing, noise rejection, either polarity, one edge per pass at 10 to 150 mm/s, hysteresis, bad baseline, stuck-at-rail, LOCAL fault latching, unchanged wire bytes, full cycles with noise across 8 seeds, a non-magnetic puck, an unplugged sensor, and the stray-field case with and without the gate.
-- The master's own 41 tests still pass against the modified `sensing_logic`.
-- `sensing` and `calibrate` compile for the ATmega328P with avr-gcc 7.3 and the Arduino AVR core, no warnings in project files under `-Wall -Wextra`. Firmware uses about 21% of flash and 32% of RAM.
+- `pio test -d sensing -e native` runs unit tests of the front end and end-to-end tests that drive the **unmodified** master and conveyor logic against a noisy Hall model. Covered: boot zeroing, noise rejection, either polarity, one edge per pass at 10 to 150 mm/s, hysteresis, bad baseline, stuck-at-rail, LOCAL fault latching, unchanged wire bytes, full cycles with noise across 8 seeds, a non-magnetic puck, a sensor output pulled to a rail, and the stray-field case with and without the gate.
+- The master's own tests still pass against the modified `sensing_logic`.
+- `sensing` and `calibrate` compile for the ATmega328P. Read the current flash and RAM figures from the build output.
 
 **Not verified:** any hardware upload, real Hall or LDR readings, the starting thresholds on a real belt, I2C with real boards, or mechanical operation. The Hall model in the tests is an assumed bell-shaped field, not a measurement.
 
+**An unplugged sensor is not reliably detected.** The health check sees a reading pinned to a supply rail. A disconnected Uno analog input floats and reads a wandering mid value, so an open circuit usually passes the check. A pull-down resistor from each Hall output to ground, about 100 kΩ, would make an open circuit read near zero and so detectable; it is not in the wiring table because it has not been bench-tested.
+
 ## Known gaps and improvements
 
+- Open-circuit detection needs a pull-down on each Hall output; without it only shorts and rail faults are caught.
 - No baseline drift compensation: a long run with temperature change can shift the resting level. A slow tracker that only updates while the channel is inactive would fix this.
 - Fixed sensitivity (about 0.27 counts per gauss at 10-bit): a weak or distant magnet may be invisible. An op-amp stage or a 16-bit ADC would help.
 - Calibration is manual, and the starting thresholds are unmeasured.
