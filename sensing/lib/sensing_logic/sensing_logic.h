@@ -7,8 +7,6 @@ class SensingLogic {
   void begin(uint16_t debounceMs);
   void sample(uint32_t now, bool reed1Closed, bool reed2Closed);
   void serviceWatchdog(bool contactLost);
-  // Latches FAULT with reason LOCAL (a sensor fault this board detected itself). Keeps the first
-  // fault reason if the board is already in FAULT, as the contract requires.
   void raiseLocalFault();
   void encode(uint8_t* bytes, uint32_t uptime) const;
 

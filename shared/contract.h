@@ -51,6 +51,7 @@ static const uint16_t FEEDBACK_STALE_MS = 300;
 static const uint16_t UPTIME_STALL_MS = 300;
 static const uint16_t SNAPSHOT_REFRESH_MS = 20;
 static const uint16_t CONTACT_WATCHDOG_MS = 1000;
+static const uint16_t REED_CLEAR_GRACE_MS = 300;
 
 inline const char* conveyorStateName(uint8_t state) {
   switch (state) {

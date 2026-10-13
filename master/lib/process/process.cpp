@@ -1,7 +1,5 @@
 #include "process.h"
 
-static const uint16_t REED_CLEAR_GRACE_MS = 300;
-
 const char* masterStateName(MasterState state) {
   switch (state) {
     case MASTER_INITIALISING: return "INITIALISING";
@@ -37,6 +35,10 @@ const char* masterFaultName(MasterFault fault) {
     case MASTER_FAULT_REED_HELD: return "REED_HELD";
     default: return "?";
   }
+}
+
+static bool repliedAfter(const SlaveView& view, uint32_t sentMs) {
+  return view.repliedThisPoll && (int32_t)(view.lastValidReplyMs - sentMs) > 0;
 }
 
 static bool isForwardPhase(MasterState state) { return state == MASTER_FORWARD || state == MASTER_TRACKING; }
@@ -90,8 +92,7 @@ void Process::sendMotion(ProcessOutput& output, char command, uint8_t expectedSt
 // Only a reply received after the command was sent can confirm it.
 Process::ConfirmResult Process::confirm(const SlaveView& conveyor, ProcessOutput& output, uint32_t now) {
   if (!pending_.active) return CONFIRM_IDLE;
-  bool replyAfterSend = conveyor.repliedThisPoll && (int32_t)(conveyor.lastValidReplyMs - pending_.sentMs) > 0;
-  if (replyAfterSend && conveyor.state == pending_.expectedState) {
+  if (repliedAfter(conveyor, pending_.sentMs) && conveyor.state == pending_.expectedState) {
     pending_.active = false;
     return CONFIRM_DONE;
   }
@@ -125,7 +126,10 @@ bool Process::checkFeedback(SlaveView& conveyor, SlaveView& sensing, ProcessOutp
   for (uint8_t i = 0; i < 2; i++) {
     SlaveView& view = *views[i];
     if (view.invalid) { enterFault(MASTER_FAULT_INVALID_REPLY, output, now); return true; }
-    if (view.inFault()) { enterFault(MASTER_FAULT_SLAVE_FAULT, output, now); return true; }
+    if (view.inFault() && !(idle && view.fault == FAULT_CONTACT_LOST)) {
+      enterFault(MASTER_FAULT_SLAVE_FAULT, output, now);
+      return true;
+    }
     if (view.uptimeStalled) { enterFault(MASTER_FAULT_FEEDBACK_STALE, output, now); return true; }
     if (view.rebootPending) {
       view.rebootPending = false;
@@ -152,8 +156,8 @@ void Process::updateBaselines(const SlaveView& conveyor, const SlaveView& sensin
 
 Observation Process::observe(const SlaveView& conveyor, const SlaveView& sensing) const {
   Observation seen;
-  seen.conveyorFresh = conveyor.fresh;
-  seen.sensingFresh = sensing.fresh;
+  seen.conveyorFresh = conveyor.fresh && conveyor.state != CONVEYOR_FAULT;
+  seen.sensingFresh = sensing.fresh && sensing.state != SENSING_FAULT;
   seen.conveyorStopped = conveyor.fresh && conveyor.state == CONVEYOR_STOPPED;
   seen.conveyorForward = conveyor.fresh && conveyor.state == CONVEYOR_FORWARD;
   seen.conveyorReverse = conveyor.fresh && conveyor.state == CONVEYOR_REVERSE;
@@ -212,6 +216,7 @@ void Process::startReverse(const SlaveView& conveyor, const SlaveView& sensing, 
 
 void Process::finishStop(const Observation& seen, ProcessOutput& output, uint32_t now) {
   if (inForwardPhase()) {
+    if (seen.arrived) savedPhase_ = MASTER_TRACKING;
     state_ = seen.magnetic ? MASTER_WAIT_ACK : MASTER_PAUSED;
     return;
   }
@@ -266,9 +271,8 @@ void Process::tick(uint32_t now, SlaveView& conveyor, SlaveView& sensing, const 
 
   if (state_ == MASTER_FAULT) {
     if (stopUnconfirmed_) {
-      bool replyAfterFault = conveyor.repliedThisPoll && (int32_t)(conveyor.lastValidReplyMs - pending_.sentMs) > 0;
       bool atRest = conveyor.state == CONVEYOR_STOPPED || conveyor.state == CONVEYOR_FAULT;
-      if (replyAfterFault && atRest) stopUnconfirmed_ = false;
+      if (repliedAfter(conveyor, pending_.sentMs) && atRest) stopUnconfirmed_ = false;
       else output.add(CONVEYOR_ADDRESS, COMMAND_STOP);
     }
     if (operatorKind != OPERATOR_NONE) output.notice = NOTICE_IGNORED;

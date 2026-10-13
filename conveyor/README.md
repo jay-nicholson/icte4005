@@ -32,11 +32,12 @@ stateDiagram-v2
     FORWARD --> FAULT: contact lost / stop output
     REVERSE --> FAULT: contact lost / stop output
     FAULT --> FAULT: commands / retain fault
-    FAULT --> [*]: board reset required
+    FAULT --> STOPPED: reads resume and reason was contact lost
+    FAULT --> [*]: LOCAL fault, board reset required
 ```
 
 Direct reversal is rejected: the master confirms STOPPED before the opposite command. There is no speed or reset command. Existing Serial `g/s/f/l` may remain in an explicit standalone bench mode; it must not compete with master commands, and bus loss must not select bench mode.
 
 ## Verification
 
-Demonstrate both directions, responsive stop, repeated-command behaviour, rejected direct reversal, continuous step count, contact timeout and reset-only recovery. Measure stop latency under load and steps per millimetre on the assembled belt. No encoder or stall detection is assumed.
+Demonstrate both directions, responsive stop, repeated-command behaviour, rejected direct reversal, continuous step count, contact timeout, recovery to STOPPED when reads resume, and no motion without a new command. Measure stop latency under load and steps per millimetre on the assembled belt. No encoder or stall detection is assumed.

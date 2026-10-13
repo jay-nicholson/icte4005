@@ -251,7 +251,7 @@ void test_invalid_reply_slave_fault_and_confirm_timeout() {
   ASSERT_FAULT(sim, MASTER_FAULT_INVALID_REPLY);
   Sim sim2; sim2.begin();
   sim2.bringToReady();
-  sim2.sensingState = SENSING_FAULT; sim2.sensingFault = FAULT_CONTACT_LOST;
+  sim2.sensingState = SENSING_FAULT; sim2.sensingFault = FAULT_LOCAL;
   sim2.step();
   ASSERT_FAULT(sim2, MASTER_FAULT_SLAVE_FAULT);
   Sim sim3; sim3.begin();
@@ -412,6 +412,47 @@ void test_resume_in_return_phase_after_overrun_complete_clears() {
   TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_BACK));
 }
 
+void test_contact_lost_slave_only_blocks_idle_states() {
+  Sim sim; sim.begin();
+  sim.conveyorState = CONVEYOR_FAULT; sim.conveyorFault = FAULT_CONTACT_LOST;
+  sim.sensingState = SENSING_FAULT; sim.sensingFault = FAULT_CONTACT_LOST;
+  sim.step(); sim.step(); sim.step();
+  ASSERT_STATE(sim, MASTER_INITIALISING);
+  TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_STOP));
+  sim.conveyorState = CONVEYOR_STOPPED; sim.conveyorFault = FAULT_NONE;
+  sim.sensingState = SENSING_OK; sim.sensingFault = FAULT_NONE;
+  sim.step(); sim.step();
+  ASSERT_STATE(sim, MASTER_READY);
+  sim.sensingState = SENSING_FAULT; sim.sensingFault = FAULT_CONTACT_LOST;
+  sim.step(OPERATOR_START);
+  ASSERT_STATE(sim, MASTER_READY);
+  TEST_ASSERT_EQUAL(NOTICE_START_NOT_READY, sim.output.notice);
+  sim.sensingState = SENSING_FAULT; sim.sensingFault = FAULT_LOCAL;
+  sim.step();
+  ASSERT_FAULT(sim, MASTER_FAULT_SLAVE_FAULT);
+}
+
+void test_contact_lost_slave_during_cycle_faults() {
+  Sim sim; sim.begin();
+  startAndConfirmForward(sim);
+  sim.sensingState = SENSING_FAULT; sim.sensingFault = FAULT_CONTACT_LOST;
+  sim.step();
+  ASSERT_FAULT(sim, MASTER_FAULT_SLAVE_FAULT);
+}
+
+void test_arrival_during_stop_promotes_saved_phase() {
+  Sim sim; sim.begin();
+  startAndConfirmForward(sim);
+  sim.step(OPERATOR_STOP);
+  sim.reed1Edges++;
+  sim.applyConveyorCommands();
+  sim.step();
+  ASSERT_STATE(sim, MASTER_PAUSED);
+  TEST_ASSERT_EQUAL(MASTER_TRACKING, sim.process.savedPhase());
+  uint32_t delta, limit;
+  TEST_ASSERT_TRUE(sim.process.travel(sim.conveyorSteps, delta, limit));
+}
+
 void test_targets_and_andon() {
   Sim sim; sim.begin();
   startAndConfirmForward(sim);
@@ -450,6 +491,9 @@ int main(int, char**) {
   RUN_TEST(test_limit_exceeded_during_stopping_faults_before_resume);
   RUN_TEST(test_unexpected_motion_faults);
   RUN_TEST(test_resume_in_return_phase_after_overrun_complete_clears);
+  RUN_TEST(test_contact_lost_slave_only_blocks_idle_states);
+  RUN_TEST(test_contact_lost_slave_during_cycle_faults);
+  RUN_TEST(test_arrival_during_stop_promotes_saved_phase);
   RUN_TEST(test_targets_and_andon);
   return UNITY_END();
 }

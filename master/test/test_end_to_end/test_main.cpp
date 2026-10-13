@@ -184,6 +184,26 @@ void test_short_forward_allowance_faults_with_real_slaves() {
   TEST_ASSERT_FALSE(world.master.stopUnconfirmed());
 }
 
+void test_master_reset_recovers_without_touching_slaves() {
+  World world; world.begin(20, true);
+  world.runUntil(MASTER_READY, 1000);
+  world.operate(OPERATOR_START);
+  world.runFor(300);
+  world.masterPolls = false;
+  world.runFor(1500);
+  TEST_ASSERT_EQUAL(CONVEYOR_FAULT, world.conveyorLogic.state());
+  TEST_ASSERT_EQUAL(SENSING_FAULT, world.sensingLogic.state());
+  Calibration calibration = {900, 1500, 300};
+  world.master.begin(calibration);
+  world.conveyorView.begin(SLAVE_CONVEYOR);
+  world.sensingView.begin(SLAVE_SENSING);
+  world.masterPolls = true;
+  TEST_ASSERT_TRUE(world.runUntil(MASTER_READY, 2000));
+  TEST_ASSERT_EQUAL(CONVEYOR_STOPPED, world.conveyorLogic.state());
+  TEST_ASSERT_EQUAL(SENSING_OK, world.sensingLogic.state());
+  TEST_ASSERT_EQUAL(MASTER_FAULT_NONE, world.master.fault());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_magnetic_puck_full_cycle);
@@ -191,5 +211,6 @@ int main(int, char**) {
   RUN_TEST(test_non_magnetic_puck_runs_until_operator_stop);
   RUN_TEST(test_slaves_fault_when_master_stops_polling);
   RUN_TEST(test_short_forward_allowance_faults_with_real_slaves);
+  RUN_TEST(test_master_reset_recovers_without_touching_slaves);
   return UNITY_END();
 }

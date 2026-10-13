@@ -27,6 +27,9 @@ void ConveyorLogic::serviceWatchdog(bool contactLost) {
   if (contactLost && state_ != CONVEYOR_FAULT) {
     state_ = CONVEYOR_FAULT;
     fault_ = FAULT_CONTACT_LOST;
+  } else if (!contactLost && state_ == CONVEYOR_FAULT && fault_ == FAULT_CONTACT_LOST) {
+    state_ = CONVEYOR_STOPPED;
+    fault_ = FAULT_NONE;
   }
 }
 

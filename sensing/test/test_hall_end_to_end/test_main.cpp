@@ -1,7 +1,4 @@
-// Runs Jay's unchanged master and conveyor logic against the Hall/LDR sensing front end.
-// The belt and puck are the same physical model as master/test/test_end_to_end; the only difference
-// is that the sensing board sees noisy ADC readings instead of ideal reed contacts. This is the proof
-// that swapping the reeds for Hall sensors needs no change to the master or to CONTRACT.md.
+// The master and conveyor logic are unchanged; only the sensing front end differs from master/test/test_end_to_end.
 #include <math.h>
 #include <unity.h>
 #include "analog_channel.h"
@@ -10,33 +7,33 @@
 #include "sensing_logic.h"
 
 static const float STEPS_PER_MM = 10;
-static const float CH1_MM = 100;
-static const float CH2_MM = 160;
+static const float CHANNEL1_MM = 100;
+static const float CHANNEL2_MM = 160;
 static const float HALL_SIGMA_MM = 4.7f;   // field bump width: about +/-6 mm above the threshold
 static const float HALL_PEAK = 60;         // counts at the sensor's closest approach
-static const float LDR_REACH_MM = 15;      // the puck shades the LDR within this distance of ch2
+static const float LIGHT_SHADE_REACH_MM = 15;      // the puck shades the LDR within this distance of ch2
 static const uint16_t SENSING_SAMPLE_MS = 2;
 static const uint16_t DEBOUNCE_MS = 20;
 static const uint16_t REST = 512;
-static const uint16_t LDR_REST = 600;
+static const uint16_t LIGHT_REST = 600;
 
 // Same values as sensing/src/main.cpp.
 static const AnalogChannel::Config HALL_CONFIG = {128, 3, 12, 6, 400, 624, 20};
-static const AnalogChannel::Config LDR_CONFIG = {128, 3, 60, 30, 30, 990, 40};
+static const AnalogChannel::Config LIGHT_SENSOR_CONFIG = {128, 3, 60, 30, 30, 990, 40};
 
-static uint32_t rngState;
-static int noise(int amplitude) {
+static uint32_t randomState;
+static int randomNoise(int amplitude) {
   if (amplitude == 0) return 0;
-  rngState ^= rngState << 13; rngState ^= rngState >> 17; rngState ^= rngState << 5;
-  return (int)(rngState % (2 * amplitude + 1)) - amplitude;
+  randomState ^= randomState << 13; randomState ^= randomState >> 17; randomState ^= randomState << 5;
+  return (int)(randomState % (2 * amplitude + 1)) - amplitude;
 }
-static uint16_t clampAdc(float v) { return v < 0 ? 0 : (v > 1023 ? 1023 : (uint16_t)v); }
+static uint16_t clampToAdcRange(float value) { return value < 0 ? 0 : (value > 1023 ? 1023 : (uint16_t)value); }
 
 struct World {
   uint32_t now;
   ConveyorLogic conveyorLogic;
   SensingLogic sensingLogic;
-  AnalogChannel hall1, hall2, ldr;
+  AnalogChannel hall1, hall2, lightSensor;
   SlaveView conveyorView, sensingView;
   Process master;
   ProcessOutput output;
@@ -44,24 +41,24 @@ struct World {
   bool puckMagnetic;
   int polarity;           // +1 / -1: which pole faces the sensor
   bool useGate;
-  int noiseAmp;
+  int noiseAmplitude;
   bool masterPolls;
-  bool hall1Disconnected;
+  bool hall1PulledLow;
   float strayCounts;      // extra field on Hall 2 with no puck near (e.g. stepper coil pickup)
   uint32_t lastReadMs, lastSampleMs, lastPollMs;
 
-  void begin(float startMm, bool magnetic, int pol = 1, bool gate = false, int noiseAmplitude = 2, uint32_t seed = 1) {
-    rngState = seed;
+  void begin(float startMm, bool magnetic, int magnetPolarity = 1, bool gate = false, int noiseCounts = 2, uint32_t seed = 1) {
+    randomState = seed;
     now = 0;
     conveyorLogic.begin();
     sensingLogic.begin(DEBOUNCE_MS);
-    hall1.begin(HALL_CONFIG); hall2.begin(HALL_CONFIG); ldr.begin(LDR_CONFIG);
+    hall1.begin(HALL_CONFIG); hall2.begin(HALL_CONFIG); lightSensor.begin(LIGHT_SENSOR_CONFIG);
     conveyorView.begin(SLAVE_CONVEYOR);
     sensingView.begin(SLAVE_SENSING);
     Calibration calibration = {900, 1500, 300};
     master.begin(calibration);
-    puckMm = startMm; puckMagnetic = magnetic; polarity = pol; useGate = gate; noiseAmp = noiseAmplitude;
-    masterPolls = true; hall1Disconnected = false; strayCounts = 0;
+    puckMm = startMm; puckMagnetic = magnetic; polarity = magnetPolarity; useGate = gate; noiseAmplitude = noiseCounts;
+    masterPolls = true; hall1PulledLow = false; strayCounts = 0;
     lastReadMs = lastSampleMs = lastPollMs = 0;
     output.clear();
   }
@@ -69,22 +66,22 @@ struct World {
   uint16_t hallRaw(float sensorMm, float extra) const {
     float value = REST + extra;
     if (puckMagnetic) {
-      float d = (puckMm - sensorMm) / HALL_SIGMA_MM;
-      value += polarity * HALL_PEAK * expf(-d * d);
+      float distanceSigmas = (puckMm - sensorMm) / HALL_SIGMA_MM;
+      value += polarity * HALL_PEAK * expf(-distanceSigmas * distanceSigmas);
     }
-    return clampAdc(value + noise(noiseAmp));
+    return clampToAdcRange(value + randomNoise(noiseAmplitude));
   }
-  uint16_t ldrRaw() const {
-    float shade = fabsf(puckMm - CH2_MM) < LDR_REACH_MM ? -150 : 0;  // any puck, magnetic or not
-    return clampAdc(LDR_REST + shade + noise(noiseAmp));
+  uint16_t lightSensorRaw() const {
+    float shadeCounts = fabsf(puckMm - CHANNEL2_MM) < LIGHT_SHADE_REACH_MM ? -150 : 0;  // any puck, magnetic or not
+    return clampToAdcRange(LIGHT_REST + shadeCounts + randomNoise(noiseAmplitude));
   }
 
   void sampleSensing() {
-    hall1.sample(hall1Disconnected ? 0 : hallRaw(CH1_MM, 0));
-    hall2.sample(hallRaw(CH2_MM, strayCounts));
-    ldr.sample(ldrRaw());
-    sensingLogic.sample(now, hall1.active(), fusedClosed(hall2.active(), ldr.active(), useGate));
-    if (hall1.fault() || hall2.fault() || (useGate && ldr.fault())) sensingLogic.raiseLocalFault();
+    hall1.sample(hall1PulledLow ? 0 : hallRaw(CHANNEL1_MM, 0));
+    hall2.sample(hallRaw(CHANNEL2_MM, strayCounts));
+    lightSensor.sample(lightSensorRaw());
+    sensingLogic.sample(now, hall1.active(), fusedClosed(hall2.active(), lightSensor.active(), useGate));
+    if (hall1.fault() || hall2.fault() || (useGate && lightSensor.fault())) sensingLogic.raiseLocalFault();
   }
 
   void poll(OperatorKind kind) {
@@ -180,10 +177,6 @@ void test_non_magnetic_puck_runs_until_operator_stop() {
   TEST_ASSERT_EQUAL(MASTER_FAULT_NONE, world.master.fault());
 }
 
-// The case that justifies the fusion gate: a brief stray field on Hall 2 while no puck is at the
-// station (stepper coil pickup, a dropped magnet). The same pulse is used with and without the gate.
-// Limit: the gate cannot reject a stray field that coincides with a non-magnetic puck at the station,
-// because the LDR sees "a puck" either way. It narrows the false-trigger window; it does not close it.
 static void injectTransientStrayField(World& world) {
   world.runUntil(MASTER_READY, 1000);
   world.operate(OPERATOR_START);
@@ -209,13 +202,12 @@ void test_stray_field_ignored_with_gate() {
   TEST_ASSERT_EQUAL(MASTER_FAULT_NONE, world.master.fault());
 }
 
-// A reed that falls off its wire just looks open. A Hall sensor that falls off its wire does not.
-void test_unplugged_hall_is_detected_and_stops_the_belt() {
+void test_hall_output_pulled_to_rail_faults_and_stops_the_belt() {
   World world; world.begin(20, true);
   world.runUntil(MASTER_READY, 1000);
   world.operate(OPERATOR_START);
   world.runFor(300);
-  world.hall1Disconnected = true;
+  world.hall1PulledLow = true;
   world.runFor(600);
   TEST_ASSERT_EQUAL(SENSING_FAULT, world.sensingLogic.state());
   TEST_ASSERT_EQUAL(FAULT_LOCAL, world.sensingLogic.fault());
@@ -224,6 +216,19 @@ void test_unplugged_hall_is_detected_and_stops_the_belt() {
   TEST_ASSERT_EQUAL(MASTER_FAULT_SLAVE_FAULT, world.master.fault());
   world.runFor(300);
   TEST_ASSERT_EQUAL(CONVEYOR_STOPPED, world.conveyorLogic.state());
+}
+
+void test_contact_loss_clears_when_polling_resumes() {
+  World world; world.begin(20, true);
+  world.runUntil(MASTER_READY, 1000);
+  world.masterPolls = false;
+  world.runFor(1200);
+  TEST_ASSERT_EQUAL(SENSING_FAULT, world.sensingLogic.state());
+  TEST_ASSERT_EQUAL(FAULT_CONTACT_LOST, world.sensingLogic.fault());
+  world.masterPolls = true;
+  world.runFor(200);
+  TEST_ASSERT_EQUAL(SENSING_OK, world.sensingLogic.state());
+  TEST_ASSERT_FALSE(world.sensingLogic.redOn());
 }
 
 int main(int, char**) {
@@ -235,6 +240,7 @@ int main(int, char**) {
   RUN_TEST(test_non_magnetic_puck_runs_until_operator_stop);
   RUN_TEST(test_stray_field_faults_master_without_gate);
   RUN_TEST(test_stray_field_ignored_with_gate);
-  RUN_TEST(test_unplugged_hall_is_detected_and_stops_the_belt);
+  RUN_TEST(test_hall_output_pulled_to_rail_faults_and_stops_the_belt);
+  RUN_TEST(test_contact_loss_clears_when_polling_resumes);
   return UNITY_END();
 }

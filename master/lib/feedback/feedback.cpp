@@ -84,8 +84,9 @@ DecodeResult SlaveView::noteReply(uint32_t now, const uint8_t* bytes, uint8_t le
   SlaveView previous = *this;
   DecodeResult result =
       (kind == SLAVE_CONVEYOR) ? decodeConveyor(bytes, length, *this) : decodeSensing(bytes, length, *this);
+  bool rebooted = false;
   if (result == DECODE_OK && previous.everValid) {
-    bool rebooted = decreased32(previous.uptime, uptime);
+    rebooted = decreased32(previous.uptime, uptime);
     bool counterDecreased = (kind == SLAVE_CONVEYOR)
         ? decreased32(previous.steps, steps)
         : (decreased16(previous.reed1Edges, reed1Edges) || decreased16(previous.reed2Edges, reed2Edges));
@@ -109,7 +110,7 @@ DecodeResult SlaveView::noteReply(uint32_t now, const uint8_t* bytes, uint8_t le
     } else {
       lastUptimeChangeMs = now;
       uptimeStalled = false;
-      if (decreased32(previous.uptime, uptime)) rebootPending = true;
+      if (rebooted) rebootPending = true;
     }
   } else {
     lastUptimeChangeMs = now;
@@ -127,11 +128,6 @@ void SlaveView::noteNoReply(uint32_t now) {
   repliedThisPoll = false;
   ageMs = now - lastValidReplyMs;
   fresh = everValid && (ageMs < FEEDBACK_STALE_MS);
-}
-
-bool SlaveView::healthy() const {
-  uint8_t faultState = (kind == SLAVE_CONVEYOR) ? (uint8_t)CONVEYOR_FAULT : (uint8_t)SENSING_FAULT;
-  return fresh && !invalid && state != faultState;
 }
 
 bool SlaveView::inFault() const {

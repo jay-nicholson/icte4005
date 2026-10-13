@@ -34,6 +34,9 @@ void SensingLogic::serviceWatchdog(bool contactLost) {
   if (contactLost && state_ != SENSING_FAULT) {
     state_ = SENSING_FAULT;
     fault_ = FAULT_CONTACT_LOST;
+  } else if (!contactLost && state_ == SENSING_FAULT && fault_ == FAULT_CONTACT_LOST) {
+    state_ = SENSING_OK;
+    fault_ = FAULT_NONE;
   }
 }
 
