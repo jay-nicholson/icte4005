@@ -1,13 +1,13 @@
 # ICTE4005 magnetic-puck conveyor
 
-Three Arduino Unos coordinate a magnetic-puck detection and return demonstration. Load one puck before the sensing station. A channel 1 edge records arrival; a channel 2 edge causes a magnetic-detection stop. After operator acknowledgement, reverse until a new reed 1 edge and run a calibrated discharge overrun. Then stop and prepare the next cycle. This demonstrates distributed control, not material identification or verified automatic sorting.
+Three Arduino Unos coordinate a magnetic-puck detection and return demonstration. Load one puck before the sensing station. A channel 1 edge records arrival; a channel 2 edge causes a magnetic-detection stop. After operator acknowledgement, the belt runs forward a calibrated distance to the ejector paddle, one sweep ejects the puck, and the belt stops. Then the next cycle is prepared. This demonstrates distributed control, not material identification or verified automatic sorting.
 
-Slaves report what they measure; the master gives it meaning. The conveyor accepts three commands. The sensing board accepts none. No reed activity means continue until the operator stops. Stop pauses the phase; Resume retains progress. Missing an expected reed causes a latched master fault. Remove all pucks and reset the master before a new cycle. Step counting estimates discharge travel; it does not verify ejection.
+Slaves report what they measure; the master gives it meaning. The conveyor accepts three process commands. The sensing board accepts none. No channel activity means continue until the operator stops. Stop pauses the phase; Resume retains progress. Missing an expected channel causes a latched master fault. Remove all pucks and reset the master before a new cycle. Step counting positions the puck at the paddle; both channels reading open after the sweep is the only evidence of ejection.
 
 ## Boards and documents
 
 - [Master](master/README.md): process coordination, polling, travel checks, Serial reporting and the system andon.
-- [Conveyor](conveyor/README.md): fixed-speed forward/reverse stepper motion and issued-step feedback.
+- [Conveyor](conveyor/README.md): fixed-speed stepper motion, the ejector paddle and issued-step feedback.
 - [Sensing](sensing/README.md): two Hall channels, an optional light gate and edge counts.
 - [Shared contract](CONTRACT.md): exact messages, state values, fault rules and calibration inputs.
 

@@ -16,7 +16,10 @@ void ConveyorLogic::command(char command) {
       if (state_ == CONVEYOR_STOPPED) state_ = CONVEYOR_REVERSE;
       return;
     case COMMAND_STOP:
-      state_ = CONVEYOR_STOPPED;
+      if (state_ != CONVEYOR_SWEEPING) state_ = CONVEYOR_STOPPED;
+      return;
+    case COMMAND_EJECT:
+      if (state_ == CONVEYOR_STOPPED || state_ == CONVEYOR_FORWARD) state_ = CONVEYOR_SWEEPING;
       return;
     default:
       return;
@@ -34,6 +37,10 @@ void ConveyorLogic::serviceWatchdog(bool contactLost) {
 }
 
 void ConveyorLogic::countStep() { steps_++; }
+
+void ConveyorLogic::sweepComplete() {
+  if (state_ == CONVEYOR_SWEEPING) state_ = CONVEYOR_STOPPED;
+}
 
 MotorRequest ConveyorLogic::motor() const {
   if (state_ == CONVEYOR_FORWARD) return MOTOR_FORWARD;

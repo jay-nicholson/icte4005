@@ -8,14 +8,16 @@ static void conveyorBytes(uint8_t* bytes, uint8_t state, uint8_t fault, uint32_t
   writeUint32LittleEndian(bytes + OFFSET_CONVEYOR_STEPS, steps);
 }
 
-static void sensingBytes(uint8_t* bytes, uint8_t state, uint8_t fault, uint32_t uptime, uint8_t live, uint16_t reed1,
-                         uint16_t reed2) {
+static void sensingBytes(uint8_t* bytes, uint8_t state, uint8_t fault, uint32_t uptime, uint8_t live, uint16_t channel1,
+                         uint16_t channel2) {
   bytes[OFFSET_STATE] = state;
   bytes[OFFSET_FAULT] = fault;
   writeUint32LittleEndian(bytes + OFFSET_UPTIME, uptime);
   bytes[OFFSET_SENSING_LIVE_MASK] = live;
-  writeUint16LittleEndian(bytes + OFFSET_SENSING_REED1_EDGES, reed1);
-  writeUint16LittleEndian(bytes + OFFSET_SENSING_REED2_EDGES, reed2);
+  writeUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL1_EDGES, channel1);
+  writeUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL2_EDGES, channel2);
+  writeUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL1_LEVEL, 0);
+  writeUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL2_LEVEL, 0);
 }
 
 void setUp() {}
@@ -34,22 +36,22 @@ void test_conveyor_decodes_little_endian() {
 
 void test_sensing_decodes_counts() {
   SlaveView view; view.begin(SLAVE_SENSING);
-  uint8_t bytes[11]; sensingBytes(bytes, SENSING_OK, FAULT_NONE, 5, LIVE_REED2, 0x1234, 0xBEEF);
-  TEST_ASSERT_EQUAL(DECODE_OK, view.noteReply(100, bytes, 11));
-  TEST_ASSERT_EQUAL_HEX16(0x1234, view.reed1Edges);
-  TEST_ASSERT_EQUAL_HEX16(0xBEEF, view.reed2Edges);
-  TEST_ASSERT_EQUAL(LIVE_REED2, view.live);
+  uint8_t bytes[15]; sensingBytes(bytes, SENSING_OK, FAULT_NONE, 5, LIVE_CHANNEL2, 0x1234, 0xBEEF);
+  TEST_ASSERT_EQUAL(DECODE_OK, view.noteReply(100, bytes, 15));
+  TEST_ASSERT_EQUAL_HEX16(0x1234, view.channel1Edges);
+  TEST_ASSERT_EQUAL_HEX16(0xBEEF, view.channel2Edges);
+  TEST_ASSERT_EQUAL(LIVE_CHANNEL2, view.live);
 }
 
 void test_wrong_length_is_invalid_and_keeps_last_good() {
   SlaveView view; view.begin(SLAVE_SENSING);
-  uint8_t bytes[11]; sensingBytes(bytes, SENSING_OK, 0, 1, 0, 7, 0);
-  view.noteReply(100, bytes, 11);
+  uint8_t bytes[15]; sensingBytes(bytes, SENSING_OK, 0, 1, 0, 7, 0);
+  view.noteReply(100, bytes, 15);
   sensingBytes(bytes, SENSING_OK, 0, 2, 0, 9, 0);
-  TEST_ASSERT_EQUAL(DECODE_BAD_LENGTH, view.noteReply(200, bytes, 10));
+  TEST_ASSERT_EQUAL(DECODE_BAD_LENGTH, view.noteReply(200, bytes, 14));
   TEST_ASSERT_TRUE(view.invalid);
   TEST_ASSERT_FALSE(view.repliedThisPoll);
-  TEST_ASSERT_EQUAL(7, view.reed1Edges);
+  TEST_ASSERT_EQUAL(7, view.channel1Edges);
 }
 
 void test_fault_state_needs_reason() {
@@ -61,26 +63,26 @@ void test_fault_state_needs_reason() {
   TEST_ASSERT_EQUAL(DECODE_FAULT_MISMATCH, decodeConveyor(bytes, 10, view));
   conveyorBytes(bytes, CONVEYOR_STOPPED, 9, 1, 0);
   TEST_ASSERT_EQUAL(DECODE_BAD_FAULT, decodeConveyor(bytes, 10, view));
-  conveyorBytes(bytes, 4, 0, 1, 0);
+  conveyorBytes(bytes, 5, 0, 1, 0);
   TEST_ASSERT_EQUAL(DECODE_BAD_STATE, decodeConveyor(bytes, 10, view));
 }
 
 void test_sensing_reserved_bits() {
   SlaveView view; view.begin(SLAVE_SENSING);
-  uint8_t bytes[11];
+  uint8_t bytes[15];
   sensingBytes(bytes, SENSING_OK, 0, 1, 0x04, 0, 0);
-  TEST_ASSERT_EQUAL(DECODE_BAD_MASK, decodeSensing(bytes, 11, view));
+  TEST_ASSERT_EQUAL(DECODE_BAD_MASK, decodeSensing(bytes, 15, view));
   sensingBytes(bytes, 2, 0, 1, 0, 0, 0);
-  TEST_ASSERT_EQUAL(DECODE_BAD_STATE, decodeSensing(bytes, 11, view));
+  TEST_ASSERT_EQUAL(DECODE_BAD_STATE, decodeSensing(bytes, 15, view));
 }
 
 void test_counter_decrease_without_reboot_is_invalid() {
   SlaveView view; view.begin(SLAVE_SENSING);
-  uint8_t bytes[11];
-  sensingBytes(bytes, SENSING_OK, 0, 1000, 0, 5, 2); view.noteReply(100, bytes, 11);
+  uint8_t bytes[15];
+  sensingBytes(bytes, SENSING_OK, 0, 1000, 0, 5, 2); view.noteReply(100, bytes, 15);
   sensingBytes(bytes, SENSING_OK, 0, 1100, 0, 4, 2);
-  TEST_ASSERT_EQUAL(DECODE_COUNTER_DECREASED, view.noteReply(200, bytes, 11));
-  TEST_ASSERT_EQUAL(5, view.reed1Edges);
+  TEST_ASSERT_EQUAL(DECODE_COUNTER_DECREASED, view.noteReply(200, bytes, 15));
+  TEST_ASSERT_EQUAL(5, view.channel1Edges);
 }
 
 void test_counter_decrease_with_reboot_is_reboot() {

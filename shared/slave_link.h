@@ -34,6 +34,13 @@ class SlaveLink {
     interrupts();
   }
 
+  bool masterInContact(uint32_t now) const {
+    noInterrupts();
+    bool everRead = everRead_;
+    interrupts();
+    return everRead && !contactLost(now);
+  }
+
   bool contactLost(uint32_t now) const {
     noInterrupts();
     bool everRead = everRead_;

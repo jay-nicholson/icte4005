@@ -12,6 +12,8 @@ static Process process;
 static bool stopRequested;
 static OperatorCommand pendingOperatorCommand;
 static Notice lastNotice;
+static bool conveyorAckFailed;
+static bool sensingAckFailed;
 static uint32_t lastPollMs;
 static uint32_t lastReportMs;
 
@@ -19,8 +21,8 @@ static MasterState shownMasterState;
 static uint8_t shownConveyorState;
 static uint8_t shownSensingState;
 static uint8_t shownLive;
-static uint16_t shownReed1Edges;
-static uint16_t shownReed2Edges;
+static uint16_t shownChannel1Edges;
+static uint16_t shownChannel2Edges;
 static bool shownConveyorFresh;
 static bool shownSensingFresh;
 
@@ -54,6 +56,12 @@ static OperatorCommand takeOperatorCommand() {
   return taken;
 }
 
+static void printSendResultOnChange(uint8_t address, char command, bool acknowledged, bool rawSend) {
+  bool& failed = (address == CONVEYOR_ADDRESS) ? conveyorAckFailed : sensingAckFailed;
+  if (rawSend || acknowledged == failed) printSendResult(address, command, acknowledged);
+  failed = !acknowledged;
+}
+
 static void printNoticeOnChange(Notice notice, bool stateChanged) {
   if (stateChanged) lastNotice = NOTICE_NONE;
   if (notice == lastNotice) return;
@@ -61,9 +69,11 @@ static void printNoticeOnChange(Notice notice, bool stateChanged) {
   printNotice(notice);
 }
 
-static void showAndon(AndonColour colour) {
+static void showAndon(AndonColour colour, uint32_t now) {
+  bool blinkOn = (now % ANDON_BLINK_PERIOD_MS) < ANDON_BLINK_PERIOD_MS / 2;
+  bool amber = colour == ANDON_AMBER || (colour == ANDON_AMBER_BLINK && blinkOn);
   digitalWrite(ANDON_GREEN_PIN, colour == ANDON_GREEN);
-  digitalWrite(ANDON_AMBER_PIN, colour == ANDON_AMBER);
+  digitalWrite(ANDON_AMBER_PIN, amber);
   digitalWrite(ANDON_RED_PIN, colour == ANDON_RED);
 }
 
@@ -91,11 +101,14 @@ void setup() {
   pinMode(ANDON_RED_PIN, OUTPUT);
   conveyor.begin(SLAVE_CONVEYOR);
   sensing.begin(SLAVE_SENSING);
-  Calibration calibration = {FORWARD_ALLOWANCE_STEPS, RETURN_ALLOWANCE_STEPS, DISCHARGE_OVERRUN_STEPS};
-  process.begin(calibration);
+  Calibration calibration = {FORWARD_ALLOWANCE_STEPS, PADDLE_STEPS};
+  Options options = {AUTO_ACK_MS, AUTO_RESTART, SINGLE_CHANNEL_BENCH};
+  process.begin(calibration, options);
   stopRequested = false;
   pendingOperatorCommand.kind = OPERATOR_NONE;
   lastNotice = NOTICE_NONE;
+  conveyorAckFailed = false;
+  sensingAckFailed = false;
   lastPollMs = millis();
   shownMasterState = MASTER_FAULT;
   Serial.print(F("MASTER contract v"));
@@ -115,6 +128,7 @@ void loop() {
     case SERIAL_NONE: break;
   }
 
+  showAndon(process.andon(), now);
   if (now - lastPollMs < POLL_INTERVAL_MS) return;
   lastPollMs = now;
 
@@ -125,22 +139,20 @@ void loop() {
   MasterState stateBefore = process.state();
   ProcessOutput output;
   process.tick(now, conveyor, sensing, taken, output);
-  showAndon(process.andon());
 
   for (uint8_t i = 0; i < output.requestCount; i++) {
     bool acknowledged = wireSend(output.requests[i].address, output.requests[i].command);
-    if (taken.kind == OPERATOR_SEND || !acknowledged) {
-      printSendResult(output.requests[i].address, output.requests[i].command, acknowledged);
-    }
+    printSendResultOnChange(output.requests[i].address, output.requests[i].command, acknowledged,
+                            taken.kind == OPERATOR_SEND);
   }
   printNoticeOnChange(output.notice, process.state() != stateBefore || taken.kind != OPERATOR_NONE);
 
-  if (sensing.fresh && (sensing.live != shownLive || sensing.reed1Edges != shownReed1Edges ||
-                        sensing.reed2Edges != shownReed2Edges)) {
-    printReedEvent(sensing, conveyor);
+  if (sensing.fresh && (sensing.live != shownLive || sensing.channel1Edges != shownChannel1Edges ||
+                        sensing.channel2Edges != shownChannel2Edges)) {
+    printChannelEvent(sensing, conveyor);
     shownLive = sensing.live;
-    shownReed1Edges = sensing.reed1Edges;
-    shownReed2Edges = sensing.reed2Edges;
+    shownChannel1Edges = sensing.channel1Edges;
+    shownChannel2Edges = sensing.channel2Edges;
   }
   if (reportDue(now)) {
     printReport(now, process, conveyor, sensing);

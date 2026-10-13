@@ -11,9 +11,8 @@ static const float MAX_HALF_STEPS_PER_SECOND = 1000.0f;
 static const uint32_t CALIBRATION_HALF_STEPS = 4096;
 static const int8_t FORWARD_DIRECTION = 1;
 
-// Ejector paddle for the ejection cycle. Not part of contract v2; left in place and disabled.
 #ifndef EJECTOR_ENABLED
-#define EJECTOR_ENABLED 0
+#define EJECTOR_ENABLED 1
 #endif
 
 static const uint8_t HALF_STEP_SEQUENCE[8][4] = {
@@ -53,6 +52,7 @@ static void motorService(MotorRequest request, ConveyorLogic& logic) {
   uint32_t now = micros();
   if (request == MOTOR_OFF) {
     lastStepMicros = now;
+    calibrationRemaining = 0;
     if (beltEnergised) {
       beltMotor.release();
       beltEnergised = false;
@@ -87,13 +87,14 @@ static int sweepPosition = 0;
 static uint32_t lastSweepStepMicros = 0;
 static uint32_t dwellStartMs = 0;
 
-static void __attribute__((unused)) startSweep() {
+static void startSweep() {
   if (sweepState != SWEEP_IDLE) return;
   sweepState = SWEEP_OUT;
   lastSweepStepMicros = micros();
 }
 
-static void ejectorService() {
+static void ejectorService(ConveyorLogic& logic) {
+  if (logic.sweeping() && sweepState == SWEEP_IDLE && sweepPosition == 0) startSweep();
   if (sweepState == SWEEP_IDLE) return;
   uint32_t now = micros();
   if (sweepState == SWEEP_DWELL) {
@@ -116,6 +117,7 @@ static void ejectorService() {
     if (--sweepPosition <= 0) {
       sweepState = SWEEP_IDLE;
       ejectorMotor.release();
+      logic.sweepComplete();
     }
   }
 }
@@ -126,11 +128,12 @@ static SlaveLink link;
 static uint32_t lastPublishMs = 0;
 static uint32_t lastPrintMs = 0;
 
-// Bench keys go through the same guards as master commands. Do not type them while the master runs a cycle.
-static void serviceBenchSerial() {
+// Bench keys work only while no master is polling, so stray Serial input cannot drive the belt during a cycle.
+static void serviceBenchSerial(uint32_t now) {
   while (Serial.available()) {
     char key = (char)Serial.read();
-    if (key == COMMAND_GO || key == COMMAND_BACK || key == COMMAND_STOP) {
+    if (link.masterInContact(now)) continue;
+    if (key == COMMAND_GO || key == COMMAND_BACK || key == COMMAND_STOP || key == COMMAND_EJECT) {
       logic.command(key);
     } else if (key == 'c') {
       calibrationRemaining = CALIBRATION_HALF_STEPS;
@@ -151,18 +154,20 @@ void setup() {
   link.begin(CONVEYOR_ADDRESS, CONVEYOR_REPLY_LENGTH);
   Serial.print(F("CONVEYOR contract v"));
   Serial.print(CONTRACT_VERSION);
-  Serial.println(F("  bench keys: g b s c"));
+  Serial.println(F("  bench keys: g b s e c"));
 }
 
 void loop() {
   uint32_t now = millis();
   char command = link.takeCommand();
   if (command) logic.command(command);
-  serviceBenchSerial();
+  serviceBenchSerial(now);
   logic.serviceWatchdog(link.contactLost(now));
   motorService(logic.motor(), logic);
 #if EJECTOR_ENABLED
-  ejectorService();
+  ejectorService(logic);
+#else
+  if (logic.sweeping()) logic.sweepComplete();
 #endif
   if (now - lastPublishMs >= SNAPSHOT_REFRESH_MS) {
     lastPublishMs = now;

@@ -2,13 +2,15 @@
 
 void SensingLogic::begin(uint16_t debounceMs) {
   debounceMs_ = debounceMs;
-  reed1_ = {false, false, 0};
-  reed2_ = {false, false, 0};
+  channel1_ = {false, false, 0};
+  channel2_ = {false, false, 0};
   state_ = SENSING_OK;
   fault_ = FAULT_NONE;
   live_ = 0;
-  reed1Edges_ = 0;
-  reed2Edges_ = 0;
+  channel1Edges_ = 0;
+  channel2Edges_ = 0;
+  channel1Level_ = 0;
+  channel2Level_ = 0;
 }
 
 // Returns true on a closing edge of the debounced level.
@@ -24,10 +26,10 @@ bool SensingLogic::debounce(Debounce& input, uint32_t now, bool raw) {
   return input.stable;
 }
 
-void SensingLogic::sample(uint32_t now, bool reed1Closed, bool reed2Closed) {
-  if (debounce(reed1_, now, reed1Closed)) reed1Edges_++;
-  if (debounce(reed2_, now, reed2Closed)) reed2Edges_++;
-  live_ = (reed1_.stable ? LIVE_REED1 : 0) | (reed2_.stable ? LIVE_REED2 : 0);
+void SensingLogic::sample(uint32_t now, bool channel1Closed, bool channel2Closed) {
+  if (debounce(channel1_, now, channel1Closed)) channel1Edges_++;
+  if (debounce(channel2_, now, channel2Closed)) channel2Edges_++;
+  live_ = (channel1_.stable ? LIVE_CHANNEL1 : 0) | (channel2_.stable ? LIVE_CHANNEL2 : 0);
 }
 
 void SensingLogic::serviceWatchdog(bool contactLost) {
@@ -47,11 +49,18 @@ void SensingLogic::raiseLocalFault() {
   }
 }
 
+void SensingLogic::setLevels(uint16_t channel1Level, uint16_t channel2Level) {
+  channel1Level_ = channel1Level;
+  channel2Level_ = channel2Level;
+}
+
 void SensingLogic::encode(uint8_t* bytes, uint32_t uptime) const {
   bytes[OFFSET_STATE] = state_;
   bytes[OFFSET_FAULT] = fault_;
   writeUint32LittleEndian(bytes + OFFSET_UPTIME, uptime);
   bytes[OFFSET_SENSING_LIVE_MASK] = live_;
-  writeUint16LittleEndian(bytes + OFFSET_SENSING_REED1_EDGES, reed1Edges_);
-  writeUint16LittleEndian(bytes + OFFSET_SENSING_REED2_EDGES, reed2Edges_);
+  writeUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL1_EDGES, channel1Edges_);
+  writeUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL2_EDGES, channel2Edges_);
+  writeUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL1_LEVEL, channel1Level_);
+  writeUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL2_LEVEL, channel2Level_);
 }

@@ -22,7 +22,7 @@ static void zeroChannel(AnalogChannel& channel, int noiseAmplitude = 2) {
 
 static int passEdges(AnalogChannel& channel, SensingLogic& logic, int peak, float speedMmS, float sigmaMm = 4.7f) {
   uint32_t now = 1000;
-  uint16_t before = logic.reed1Edges();
+  uint16_t before = logic.channel1Edges();
   float span = 6 * sigmaMm;
   float travelled = -span;
   while (travelled < span + 40) {  // run on past the sensor so the channel can release
@@ -32,7 +32,7 @@ static int passEdges(AnalogChannel& channel, SensingLogic& logic, int peak, floa
     now += 2;
     travelled += speedMmS * 0.002f;
   }
-  return logic.reed1Edges() - before;
+  return logic.channel1Edges() - before;
 }
 
 void setUp() { randomState = 12345; }
@@ -138,8 +138,8 @@ void test_wire_format_is_unchanged() {
   TEST_ASSERT_EQUAL(0x04, bytes[2]);  // little-endian uptime
   TEST_ASSERT_EQUAL(0x01, bytes[5]);
   TEST_ASSERT_EQUAL(0, bytes[OFFSET_SENSING_LIVE_MASK] & ~LIVE_MASK_ALL);
-  TEST_ASSERT_EQUAL(1, readUint16LittleEndian(bytes + OFFSET_SENSING_REED1_EDGES));
-  TEST_ASSERT_EQUAL(0, readUint16LittleEndian(bytes + OFFSET_SENSING_REED2_EDGES));
+  TEST_ASSERT_EQUAL(1, readUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL1_EDGES));
+  TEST_ASSERT_EQUAL(0, readUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL2_EDGES));
 }
 
 void test_fusion_truth_table() {

@@ -1,16 +1,17 @@
 // Runs the real master process against the real slave logic through contract bytes.
-// The belt, puck and reeds are a small physical model; the hardware hooks are stubbed.
+// The belt, puck and channels are a small physical model; the hardware hooks are stubbed.
 #include <unity.h>
 #include "conveyor_logic.h"
 #include "process.h"
 #include "sensing_logic.h"
 
 static const float STEPS_PER_MM = 10;
-static const float REED1_MM = 100;
-static const float REED2_MM = 160;
-static const float REED_HALF_WINDOW_MM = 5;
+static const float CHANNEL1_MM = 100;
+static const float CHANNEL2_MM = 160;
+static const float SENSOR_HALF_WINDOW_MM = 5;
 static const uint16_t SENSING_SAMPLE_MS = 2;
 static const uint16_t DEBOUNCE_MS = 20;
+static const uint32_t SWEEP_DURATION_MS = 2800;
 
 struct World {
   uint32_t now;
@@ -26,29 +27,34 @@ struct World {
   uint32_t lastReadMs;
   uint32_t lastSampleMs;
   uint32_t lastPollMs;
+  uint32_t sweepStartedMs;
+  bool puckEjected;
 
-  void begin(float startMm, bool magnetic, uint32_t forward = 900, uint32_t ret = 1500, uint32_t overrun = 300) {
+  void begin(float startMm, bool magnetic, uint32_t forward = 900, uint32_t paddle = 1500) {
     now = 0;
     conveyorLogic.begin();
     sensingLogic.begin(DEBOUNCE_MS);
     conveyorView.begin(SLAVE_CONVEYOR);
     sensingView.begin(SLAVE_SENSING);
-    Calibration calibration = {forward, ret, overrun};
-    master.begin(calibration);
+    Calibration calibration = {forward, paddle};
+    Options options = {0, false, false};
+    master.begin(calibration, options);
     puckMm = startMm;
     puckMagnetic = magnetic;
     masterPolls = true;
     lastReadMs = 0;
     lastSampleMs = 0;
     lastPollMs = 0;
+    sweepStartedMs = 0;
+    puckEjected = false;
     output.clear();
   }
 
-  bool reedClosed(float reedMm) const {
-    if (!puckMagnetic) return false;
-    float distance = puckMm - reedMm;
+  bool sensorClosed(float sensorMm) const {
+    if (!puckMagnetic || puckEjected) return false;
+    float distance = puckMm - sensorMm;
     if (distance < 0) distance = -distance;
-    return distance < REED_HALF_WINDOW_MM;
+    return distance < SENSOR_HALF_WINDOW_MM;
   }
 
   void poll(OperatorKind kind) {
@@ -73,9 +79,17 @@ struct World {
       conveyorLogic.countStep();
       puckMm += (motor == MOTOR_FORWARD ? 1.0f : -1.0f) / STEPS_PER_MM;
     }
+    if (conveyorLogic.sweeping()) {
+      if (sweepStartedMs == 0) sweepStartedMs = now;
+      if (now - sweepStartedMs >= SWEEP_DURATION_MS) {
+        puckEjected = true;
+        conveyorLogic.sweepComplete();
+        sweepStartedMs = 0;
+      }
+    }
     if (now - lastSampleMs >= SENSING_SAMPLE_MS) {
       lastSampleMs = now;
-      sensingLogic.sample(now, reedClosed(REED1_MM), reedClosed(REED2_MM));
+      sensingLogic.sample(now, sensorClosed(CHANNEL1_MM), sensorClosed(CHANNEL2_MM));
     }
     bool contactLost = lastReadMs > 0 && (now - lastReadMs) >= CONTACT_WATCHDOG_MS;
     conveyorLogic.serviceWatchdog(contactLost);
@@ -117,13 +131,15 @@ void test_magnetic_puck_full_cycle() {
   TEST_ASSERT_TRUE(world.runUntil(MASTER_TRACKING, 2000));
   TEST_ASSERT_TRUE(world.runUntil(MASTER_WAIT_ACK, 2000));
   TEST_ASSERT_EQUAL(CONVEYOR_STOPPED, world.conveyorLogic.state());
-  TEST_ASSERT_TRUE(world.puckMm > REED2_MM - REED_HALF_WINDOW_MM);
-  TEST_ASSERT_EQUAL(LIVE_REED2, world.sensingLogic.live());
+  TEST_ASSERT_TRUE(world.puckMm > CHANNEL2_MM - SENSOR_HALF_WINDOW_MM);
+  TEST_ASSERT_EQUAL(LIVE_CHANNEL2, world.sensingLogic.live());
+  float stopMm = world.puckMm;
   world.operate(OPERATOR_ACK);
-  TEST_ASSERT_TRUE(world.runUntil(MASTER_OVERRUN, 3000));
-  TEST_ASSERT_TRUE(world.runUntil(MASTER_READY, 3000));
+  TEST_ASSERT_TRUE(world.runUntil(MASTER_EJECTING, 20000));
+  TEST_ASSERT_TRUE(world.puckMm - stopMm >= 1500 / STEPS_PER_MM);
+  TEST_ASSERT_TRUE(world.runUntil(MASTER_READY, 5000));
   TEST_ASSERT_EQUAL(CONVEYOR_STOPPED, world.conveyorLogic.state());
-  TEST_ASSERT_TRUE(world.puckMm < REED1_MM - REED_HALF_WINDOW_MM);
+  TEST_ASSERT_TRUE(world.puckEjected);
   TEST_ASSERT_EQUAL(0, world.sensingLogic.live());
   TEST_ASSERT_EQUAL(MASTER_FAULT_NONE, world.master.fault());
 }
@@ -172,7 +188,7 @@ void test_slaves_fault_when_master_stops_polling() {
 }
 
 void test_short_forward_allowance_faults_with_real_slaves() {
-  World world; world.begin(20, true, 200, 1500, 300);
+  World world; world.begin(20, true, 200, 1500);
   world.runUntil(MASTER_READY, 1000);
   world.operate(OPERATOR_START);
   TEST_ASSERT_TRUE(world.runUntil(MASTER_FAULT, 4000));
@@ -191,8 +207,9 @@ void test_master_reset_recovers_without_touching_slaves() {
   world.runFor(1500);
   TEST_ASSERT_EQUAL(CONVEYOR_FAULT, world.conveyorLogic.state());
   TEST_ASSERT_EQUAL(SENSING_FAULT, world.sensingLogic.state());
-  Calibration calibration = {900, 1500, 300};
-  world.master.begin(calibration);
+  Calibration calibration = {900, 1500};
+  Options options = {0, false, false};
+  world.master.begin(calibration, options);
   world.conveyorView.begin(SLAVE_CONVEYOR);
   world.sensingView.begin(SLAVE_SENSING);
   world.masterPolls = true;
