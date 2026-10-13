@@ -8,9 +8,6 @@
 static const uint8_t HALL1_PIN = A0;
 static const uint8_t HALL2_PIN = A1;
 static const uint8_t LIGHT_SENSOR_PIN = A2;
-static const uint8_t LED_GREEN_PIN = 5;
-static const uint8_t LED_AMBER_PIN = 6;
-static const uint8_t LED_RED_PIN = 7;
 
 // Starting values only. Measure with the calibrate environment; see README.
 static const bool USE_LIGHT_GATE = false;
@@ -18,7 +15,6 @@ static const bool USE_LIGHT_GATE = false;
 
 static const uint16_t DEBOUNCE_MS = 20;
 static const uint16_t SAMPLE_INTERVAL_MS = 2;
-static const uint16_t LAMP_TEST_MS = 300;
 
 static const AnalogChannel::Config HALL_CONFIG = {128, 3, 12, 6, 400, 624, 20};
 static const AnalogChannel::Config LIGHT_SENSOR_CONFIG = {128, 3, 60, 30, 30, 990, 40};
@@ -40,21 +36,8 @@ static uint16_t readAdc(uint8_t pin) {
   return analogRead(pin);
 }
 
-static void setLeds(bool green, bool amber, bool red) {
-  digitalWrite(LED_GREEN_PIN, green);
-  digitalWrite(LED_AMBER_PIN, amber);
-  digitalWrite(LED_RED_PIN, red);
-}
-
 void setup() {
   Serial.begin(9600);
-  pinMode(LED_GREEN_PIN, OUTPUT);
-  pinMode(LED_AMBER_PIN, OUTPUT);
-  pinMode(LED_RED_PIN, OUTPUT);
-  setLeds(true, true, true);
-  delay(LAMP_TEST_MS);
-  setLeds(false, false, false);
-
   hall1.begin(HALL_CONFIG);
   hall2.begin(HALL_CONFIG);
   lightSensor.begin(LIGHT_SENSOR_CONFIG);
@@ -78,7 +61,6 @@ void loop() {
     if (hall1.fault() || hall2.fault() || (USE_LIGHT_GATE && lightSensor.fault())) logic.raiseLocalFault();
   }
   logic.serviceWatchdog(link.contactLost(now));
-  setLeds(logic.greenOn(), logic.amberOn(), logic.redOn());
   if (now - lastPublishMs >= SNAPSHOT_REFRESH_MS) {
     lastPublishMs = now;
     uint8_t bytes[SENSING_REPLY_LENGTH];

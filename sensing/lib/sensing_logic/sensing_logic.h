@@ -15,9 +15,6 @@ class SensingLogic {
   uint8_t live() const { return live_; }
   uint16_t reed1Edges() const { return reed1Edges_; }
   uint16_t reed2Edges() const { return reed2Edges_; }
-  bool greenOn() const { return live_ & LIVE_REED1; }
-  bool amberOn() const { return live_ & LIVE_REED2; }
-  bool redOn() const { return state_ == SENSING_FAULT; }
 
  private:
   struct Debounce {

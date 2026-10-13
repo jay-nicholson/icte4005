@@ -211,7 +211,6 @@ void test_hall_output_pulled_to_rail_faults_and_stops_the_belt() {
   world.runFor(600);
   TEST_ASSERT_EQUAL(SENSING_FAULT, world.sensingLogic.state());
   TEST_ASSERT_EQUAL(FAULT_LOCAL, world.sensingLogic.fault());
-  TEST_ASSERT_TRUE(world.sensingLogic.redOn());
   ASSERT_STATE(world, MASTER_FAULT);
   TEST_ASSERT_EQUAL(MASTER_FAULT_SLAVE_FAULT, world.master.fault());
   world.runFor(300);
@@ -228,7 +227,6 @@ void test_contact_loss_clears_when_polling_resumes() {
   world.masterPolls = true;
   world.runFor(200);
   TEST_ASSERT_EQUAL(SENSING_OK, world.sensingLogic.state());
-  TEST_ASSERT_FALSE(world.sensingLogic.redOn());
 }
 
 int main(int, char**) {

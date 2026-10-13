@@ -118,7 +118,6 @@ void test_local_fault_is_reported_and_keeps_first_reason() {
   logic.encode(bytes, 5000);
   TEST_ASSERT_EQUAL(SENSING_FAULT, bytes[OFFSET_STATE]);
   TEST_ASSERT_EQUAL(FAULT_LOCAL, bytes[OFFSET_FAULT]);
-  TEST_ASSERT_TRUE(logic.redOn());
   logic.serviceWatchdog(true);  // a later contact loss must not overwrite the first reason
   TEST_ASSERT_EQUAL(FAULT_LOCAL, logic.fault());
 

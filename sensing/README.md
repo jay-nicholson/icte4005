@@ -1,4 +1,4 @@
-# Sensing Arduino — Hall sensors, LDR gate and local LEDs
+# Sensing Arduino — Hall sensors and LDR gate
 
 [Shared contract](../CONTRACT.md) · [Build instructions](../README.md#platformio)
 
@@ -16,7 +16,7 @@ A reed is a binary snap switch with mechanical hysteresis, and its trigger depen
 | Low-pass filter | ADC noise and coil pickup must not look like an event. |
 | Absolute deviation | Magnet polarity and orientation stop mattering. |
 | On/off hysteresis | A marginal signal cannot chatter. |
-| Health checks | A sensor output stuck at either supply rail, or a resting level outside the plausible band at boot, latches a LOCAL fault. |
+| Health checks | A sensor output stuck at either supply rail, or a resting level outside the plausible band at boot, latches a LOCAL fault. The master andon shows red. |
 
 The existing 20 ms debounce and edge counting in `lib/sensing_logic` run unchanged on the output.
 
@@ -35,7 +35,6 @@ Limits, stated plainly:
 | Hall 1 (UGN3503UA) | Vcc to 5 V, GND to GND, output to **A0** |
 | Hall 2 (UGN3503UA) | Vcc to 5 V, GND to GND, output to **A1** |
 | LDR module | Power to 5 V and GND, analog output to **A2** |
-| Green / amber / red LED | Pins **5 / 6 / 7**, each through a ~330 ohm resistor to GND (as in the seed) |
 | I2C | A4 (SDA) and A5 (SCL) to the master; common ground. Not used for analog. |
 
 Check the UGN3503UA pin order against its datasheet before powering it: wrong-way power can destroy the part. A 0.1 uF ceramic across each Hall's Vcc and GND is good practice. Check the LDR module's silkscreen for the signal pin.
@@ -55,16 +54,12 @@ Build the calibrate environment (`pio run -d sensing -e calibrate -t upload`). O
 ## Code layout
 
 - `lib/analog_channel`: baseline, filter, deviation, hysteresis and health. Pure C++, host-tested.
-- `lib/sensing_logic`: debounce, counters, LED decision, reply encoder, plus `raiseLocalFault()`, which latches LOCAL and keeps the first fault reason. CONTACT_LOST clears itself when master reads resume; LOCAL does not.
-- `src/main.cpp`: pins, tuning, sampling loop, fusion, LED output, Wire link.
+- `lib/sensing_logic`: debounce, counters, reply encoder, plus `raiseLocalFault()`, which latches LOCAL and keeps the first fault reason. CONTACT_LOST clears itself when master reads resume; LOCAL does not.
+- `src/main.cpp`: pins, tuning, sampling loop, fusion, Wire link.
 - `src/calibrate.cpp`: the bench measuring tool, built by the `calibrate` environment.
 - `../shared/slave_link.h`: Wire slave boilerplate, unchanged.
 
-Boot behaviour: all three LEDs light for 300 ms (lamp test), then the baselines are captured over about 0.26 s. **Keep the belt clear and no magnet near either sensor at power-up**, or the baseline is wrong. A baseline outside the plausible band latches a LOCAL fault rather than running with bad data.
-
-## LEDs
-
-Green while channel 1 reads closed. Amber while channel 2 reads closed. Red while the board is in FAULT. Off otherwise. The LEDs show the local reading only.
+Boot behaviour: the baselines are captured over about 0.26 s. **Keep the belt clear and no magnet near either sensor at power-up**, or the baseline is wrong. A baseline outside the plausible band latches a LOCAL fault rather than running with bad data.
 
 ## Verification
 
