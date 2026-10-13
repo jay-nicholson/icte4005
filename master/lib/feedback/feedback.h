@@ -35,8 +35,10 @@ struct SlaveView {
   uint32_t uptime;
   uint32_t steps;
   uint8_t live;
-  uint16_t reed1Edges;
-  uint16_t reed2Edges;
+  uint16_t channel1Edges;
+  uint16_t channel2Edges;
+  uint16_t channel1Level;
+  uint16_t channel2Level;
 
   uint32_t lastUptimeChangeMs;
 

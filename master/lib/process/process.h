@@ -10,8 +10,8 @@ enum MasterState {
   MASTER_TRACKING,
   MASTER_STOPPING,
   MASTER_WAIT_ACK,
-  MASTER_RETURNING,
-  MASTER_OVERRUN,
+  MASTER_APPROACH,
+  MASTER_EJECTING,
   MASTER_CLEARING,
   MASTER_PAUSED,
   MASTER_BENCH,
@@ -21,8 +21,7 @@ enum MasterState {
 enum MasterFault {
   MASTER_FAULT_NONE = 0,
   MASTER_FAULT_MISSING_FORWARD,
-  MASTER_FAULT_MISSING_RETURN,
-  MASTER_FAULT_REED_ORDER,
+  MASTER_FAULT_CHANNEL_ORDER,
   MASTER_FAULT_FEEDBACK_LOST,
   MASTER_FAULT_FEEDBACK_STALE,
   MASTER_FAULT_INVALID_REPLY,
@@ -30,8 +29,9 @@ enum MasterFault {
   MASTER_FAULT_UNEXPECTED_MOTION,
   MASTER_FAULT_CONFIRM_TIMEOUT,
   MASTER_FAULT_STOP_UNCONFIRMED,
+  MASTER_FAULT_SWEEP_TIMEOUT,
   MASTER_FAULT_SLAVE_REBOOT,
-  MASTER_FAULT_REED_HELD
+  MASTER_FAULT_CHANNEL_HELD
 };
 
 enum OperatorKind {
@@ -54,26 +54,29 @@ enum Notice {
   NOTICE_NONE = 0,
   NOTICE_START_NOT_CALIBRATED,
   NOTICE_START_NOT_READY,
-  NOTICE_START_REED_ACTIVE,
-  NOTICE_ACK_REED1_ACTIVE,
+  NOTICE_START_CHANNEL_ACTIVE,
   NOTICE_IGNORED,
   NOTICE_INIT_WAITING,
-  NOTICE_INIT_REEDS_ACTIVE,
+  NOTICE_INIT_CHANNELS_ACTIVE,
   NOTICE_BENCH_ENTERED,
   NOTICE_RAW_SENT,
   NOTICE_STOP_ALREADY,
+  NOTICE_SWEEP_IN_PROGRESS,
   NOTICE_RESUMED
 };
 
-enum AndonColour { ANDON_OFF, ANDON_GREEN, ANDON_AMBER, ANDON_RED };
+enum AndonColour { ANDON_OFF, ANDON_GREEN, ANDON_AMBER, ANDON_AMBER_BLINK, ANDON_RED };
 
 struct Calibration {
   uint32_t forwardAllowanceSteps;
-  uint32_t returnAllowanceSteps;
-  uint32_t dischargeOverrunSteps;
-  bool ready() const {
-    return forwardAllowanceSteps > 0 && returnAllowanceSteps > 0 && dischargeOverrunSteps > 0;
-  }
+  uint32_t paddleSteps;
+  bool ready() const { return forwardAllowanceSteps > 0 && paddleSteps > 0; }
+};
+
+struct Options {
+  uint32_t autoAckMs;        // 0 keeps acknowledgement manual
+  bool autoRestart;          // after a clean eject, start the next cycle without Start
+  bool singleChannelBench;   // one sensor fitted: a channel 1 edge also counts as magnetic
 };
 
 struct Request {
@@ -101,16 +104,13 @@ struct Observation {
   bool sensingFresh;
   bool conveyorStopped;
   bool conveyorForward;
-  bool conveyorReverse;
-  bool reedsClear;
-  bool reed1Closed;
+  bool conveyorSweeping;
+  bool channelsClear;
   bool arrived;
   bool magnetic;
-  bool reedOrderBad;
-  bool returned;
+  bool channelOrderBad;
   bool forwardOverdue;
-  bool returnOverdue;
-  bool overrunDone;
+  bool approachDone;
 };
 
 const char* masterStateName(MasterState state);
@@ -118,7 +118,7 @@ const char* masterFaultName(MasterFault fault);
 
 class Process {
  public:
-  void begin(const Calibration& calibration);
+  void begin(const Calibration& calibration, const Options& options);
   void tick(uint32_t now, SlaveView& conveyor, SlaveView& sensing, const OperatorCommand& operatorCommand,
             ProcessOutput& output);
 
@@ -144,7 +144,6 @@ class Process {
 
   MasterState activePhase() const;
   bool inForwardPhase() const;
-  bool inReturnPhase() const;
   bool inCycle() const;
 
   void sendMotion(ProcessOutput& output, char command, uint8_t expectedState, bool retryEachPoll, uint32_t now);
@@ -158,9 +157,11 @@ class Process {
   void updateBaselines(const SlaveView& conveyor, const SlaveView& sensing);
   Observation observe(const SlaveView& conveyor, const SlaveView& sensing) const;
   bool checkProgress(const Observation& seen, ProcessOutput& output, uint32_t now);
+  void startCycle(const SlaveView& conveyor, const SlaveView& sensing, ProcessOutput& output, uint32_t now);
   void startForward(const Observation& seen, ProcessOutput& output, uint32_t now);
-  void startReverse(const SlaveView& conveyor, const SlaveView& sensing, const Observation& seen,
-                    ProcessOutput& output, uint32_t now);
+  void startApproach(const SlaveView& conveyor, ProcessOutput& output, uint32_t now);
+  void startEject(ProcessOutput& output, uint32_t now);
+  void tickEjecting(const SlaveView& conveyor, const Observation& seen, ProcessOutput& output, uint32_t now);
   void finishStop(const Observation& seen, ProcessOutput& output, uint32_t now);
   void resume(const SlaveView& conveyor, const SlaveView& sensing, const Observation& seen, ProcessOutput& output,
               uint32_t now);
@@ -170,20 +171,22 @@ class Process {
   MasterState savedPhase_;
   MasterFault fault_;
   Calibration calibration_;
+  Options options_;
+  uint32_t waitAckSinceMs_;
+  bool restartPending_;
   Pending pending_;
   bool initialStopRequested_;
   bool stopUnconfirmed_;
 
   bool hasReedBaseline_;
-  uint16_t reed1Start_;
-  uint16_t reed2Start_;
+  uint16_t channel1Start_;
+  uint16_t channel2Start_;
   bool hasEntryBaseline_;
   uint32_t entryBaseline_;
-  bool hasReturnBaseline_;
-  uint16_t reed1ReturnStart_;
-  uint32_t returnBaseline_;
-  bool hasOverrunBaseline_;
-  uint32_t overrunBaseline_;
+  bool hasApproachBaseline_;
+  uint32_t approachBaseline_;
+  bool sweepSeen_;
+  uint32_t ejectSentMs_;
   bool clearingWaitStarted_;
   uint32_t clearingWaitStartMs_;
 };

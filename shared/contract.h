@@ -1,33 +1,37 @@
-// Numbers from CONTRACT.md v2. Change only together with that file.
+// Numbers from CONTRACT.md v3. Change only together with that file.
 #pragma once
 #include <stdint.h>
 
-static const uint8_t CONTRACT_VERSION = 2;
+static const uint8_t CONTRACT_VERSION = 3;
 
 static const uint8_t CONVEYOR_ADDRESS = 0x10;
 static const uint8_t SENSING_ADDRESS = 0x11;
 
 static const uint8_t CONVEYOR_REPLY_LENGTH = 10;
-static const uint8_t SENSING_REPLY_LENGTH = 11;
-static const uint8_t MAX_REPLY_LENGTH = 11;
+static const uint8_t SENSING_REPLY_LENGTH = 15;
+static const uint8_t MAX_REPLY_LENGTH = 15;
 
 static const char COMMAND_GO = 'g';
 static const char COMMAND_BACK = 'b';
 static const char COMMAND_STOP = 's';
+static const char COMMAND_EJECT = 'e';
 
 static const uint8_t OFFSET_STATE = 0;
 static const uint8_t OFFSET_FAULT = 1;
 static const uint8_t OFFSET_UPTIME = 2;
 static const uint8_t OFFSET_CONVEYOR_STEPS = 6;
 static const uint8_t OFFSET_SENSING_LIVE_MASK = 6;
-static const uint8_t OFFSET_SENSING_REED1_EDGES = 7;
-static const uint8_t OFFSET_SENSING_REED2_EDGES = 9;
+static const uint8_t OFFSET_SENSING_CHANNEL1_EDGES = 7;
+static const uint8_t OFFSET_SENSING_CHANNEL2_EDGES = 9;
+static const uint8_t OFFSET_SENSING_CHANNEL1_LEVEL = 11;
+static const uint8_t OFFSET_SENSING_CHANNEL2_LEVEL = 13;
 
 enum ConveyorState {
   CONVEYOR_STOPPED = 0,
   CONVEYOR_FORWARD = 1,
   CONVEYOR_REVERSE = 2,
-  CONVEYOR_FAULT = 3
+  CONVEYOR_FAULT = 3,
+  CONVEYOR_SWEEPING = 4
 };
 
 enum SensingState {
@@ -41,9 +45,9 @@ enum FaultCode {
   FAULT_LOCAL = 2
 };
 
-static const uint8_t LIVE_REED1 = 0x01;
-static const uint8_t LIVE_REED2 = 0x02;
-static const uint8_t LIVE_MASK_ALL = LIVE_REED1 | LIVE_REED2;
+static const uint8_t LIVE_CHANNEL1 = 0x01;
+static const uint8_t LIVE_CHANNEL2 = 0x02;
+static const uint8_t LIVE_MASK_ALL = LIVE_CHANNEL1 | LIVE_CHANNEL2;
 
 static const uint16_t POLL_INTERVAL_MS = 100;
 static const uint16_t CONFIRM_TIMEOUT_MS = 300;
@@ -51,7 +55,8 @@ static const uint16_t FEEDBACK_STALE_MS = 300;
 static const uint16_t UPTIME_STALL_MS = 300;
 static const uint16_t SNAPSHOT_REFRESH_MS = 20;
 static const uint16_t CONTACT_WATCHDOG_MS = 1000;
-static const uint16_t REED_CLEAR_GRACE_MS = 300;
+static const uint16_t CHANNEL_CLEAR_GRACE_MS = 300;
+static const uint16_t SWEEP_TIMEOUT_MS = 6000;
 
 inline const char* conveyorStateName(uint8_t state) {
   switch (state) {
@@ -59,6 +64,7 @@ inline const char* conveyorStateName(uint8_t state) {
     case CONVEYOR_FORWARD: return "FORWARD";
     case CONVEYOR_REVERSE: return "REVERSE";
     case CONVEYOR_FAULT: return "FAULT";
+    case CONVEYOR_SWEEPING: return "SWEEPING";
     default: return "INVALID";
   }
 }

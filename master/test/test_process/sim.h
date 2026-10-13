@@ -19,20 +19,21 @@ struct Sim {
   uint8_t sensingState;
   uint8_t sensingFault;
   uint8_t sensingLive;
-  uint16_t reed1Edges;
-  uint16_t reed2Edges;
+  uint16_t channel1Edges;
+  uint16_t channel2Edges;
   uint32_t sensingUptime;
   bool sensingReplies;
 
-  void begin(uint32_t forwardAllowance = 1000, uint32_t returnAllowance = 1500, uint32_t dischargeOverrun = 200) {
+  void begin(uint32_t forwardAllowance = 1000, uint32_t paddleSteps = 300, uint32_t autoAckMs = 0, bool autoRestart = false) {
     now = 1000;
     conveyor.begin(SLAVE_CONVEYOR);
     sensing.begin(SLAVE_SENSING);
-    Calibration calibration = {forwardAllowance, returnAllowance, dischargeOverrun};
-    process.begin(calibration);
+    Calibration calibration = {forwardAllowance, paddleSteps};
+    Options options = {autoAckMs, autoRestart, false};
+    process.begin(calibration, options);
     conveyorState = CONVEYOR_STOPPED; conveyorFault = 0; conveyorSteps = 0; conveyorUptime = 500;
     conveyorReplies = true; stepsPerPoll = 50;
-    sensingState = SENSING_OK; sensingFault = 0; sensingLive = 0; reed1Edges = 0; reed2Edges = 0;
+    sensingState = SENSING_OK; sensingFault = 0; sensingLive = 0; channel1Edges = 0; channel2Edges = 0;
     sensingUptime = 700; sensingReplies = true;
   }
 
@@ -52,8 +53,10 @@ struct Sim {
       bytes[OFFSET_FAULT] = sensingFault;
       writeUint32LittleEndian(bytes + OFFSET_UPTIME, sensingUptime);
       bytes[OFFSET_SENSING_LIVE_MASK] = sensingLive;
-      writeUint16LittleEndian(bytes + OFFSET_SENSING_REED1_EDGES, reed1Edges);
-      writeUint16LittleEndian(bytes + OFFSET_SENSING_REED2_EDGES, reed2Edges);
+      writeUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL1_EDGES, channel1Edges);
+      writeUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL2_EDGES, channel2Edges);
+      writeUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL1_LEVEL, 0);
+      writeUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL2_LEVEL, 0);
       sensing.noteReply(now, bytes, SENSING_REPLY_LENGTH);
     } else {
       sensing.noteNoReply(now);
@@ -89,6 +92,11 @@ struct Sim {
   void applyConveyorCommands() {
     if (sent(CONVEYOR_ADDRESS, COMMAND_GO) && conveyorState == CONVEYOR_STOPPED) conveyorState = CONVEYOR_FORWARD;
     if (sent(CONVEYOR_ADDRESS, COMMAND_BACK) && conveyorState == CONVEYOR_STOPPED) conveyorState = CONVEYOR_REVERSE;
-    if (sent(CONVEYOR_ADDRESS, COMMAND_STOP) && conveyorState != CONVEYOR_FAULT) conveyorState = CONVEYOR_STOPPED;
+    if (sent(CONVEYOR_ADDRESS, COMMAND_STOP) && conveyorState != CONVEYOR_FAULT && conveyorState != CONVEYOR_SWEEPING) {
+      conveyorState = CONVEYOR_STOPPED;
+    }
+    if (sent(CONVEYOR_ADDRESS, COMMAND_EJECT) && (conveyorState == CONVEYOR_STOPPED || conveyorState == CONVEYOR_FORWARD)) {
+      conveyorState = CONVEYOR_SWEEPING;
+    }
   }
 };

@@ -5,8 +5,10 @@
 #include "slave_link.h"
 
 // Set to the assembled wiring. A4 and A5 are the I2C bus.
+// Bench only, not committed: channel 2 reads the same sensor as channel 1 until the second Hall is fitted.
 static const uint8_t HALL1_PIN = A0;
-static const uint8_t HALL2_PIN = A1;
+static const uint8_t HALL2_PIN = A0;
+#define HALL2_FITTED 1
 static const uint8_t LIGHT_SENSOR_PIN = A2;
 
 // Starting values only. Measure with the calibrate environment; see README.
@@ -53,12 +55,14 @@ void loop() {
   if (now - lastSampleMs >= SAMPLE_INTERVAL_MS) {
     lastSampleMs = now;
     hall1.sample(readAdc(HALL1_PIN));
-    hall2.sample(readAdc(HALL2_PIN));
+    if (HALL2_FITTED) hall2.sample(readAdc(HALL2_PIN));
     lightSensor.sample(readAdc(LIGHT_SENSOR_PIN));
     bool channel1 = hall1.active();
-    bool channel2 = fusedClosed(hall2.active(), lightSensor.active(), USE_LIGHT_GATE);
+    bool channel2 = HALL2_FITTED && fusedClosed(hall2.active(), lightSensor.active(), USE_LIGHT_GATE);
     logic.sample(now, channel1, channel2);
-    if (hall1.fault() || hall2.fault() || (USE_LIGHT_GATE && lightSensor.fault())) logic.raiseLocalFault();
+    logic.setLevels(hall1.deviation(), hall2.deviation());
+    bool hallFault = hall1.fault() || (HALL2_FITTED && hall2.fault());
+    if (hallFault || (USE_LIGHT_GATE && lightSensor.fault())) logic.raiseLocalFault();
   }
   logic.serviceWatchdog(link.contactLost(now));
   if (now - lastPublishMs >= SNAPSHOT_REFRESH_MS) {
@@ -79,9 +83,9 @@ void loop() {
     Serial.print(F(" live="));
     Serial.print(logic.live());
     Serial.print(F(" edges="));
-    Serial.print(logic.reed1Edges());
+    Serial.print(logic.channel1Edges());
     Serial.print('/');
-    Serial.print(logic.reed2Edges());
+    Serial.print(logic.channel2Edges());
     Serial.print(F(" state="));
     Serial.print(sensingStateName(logic.state()));
     Serial.print(F(" fault="));

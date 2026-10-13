@@ -10,5 +10,5 @@ SerialAction serialPoll(OperatorCommand& operatorCommand);
 void printHelp();
 void printNotice(Notice notice);
 void printSendResult(uint8_t address, char command, bool acknowledged);
-void printReedEvent(const SlaveView& sensing, const SlaveView& conveyor);
+void printChannelEvent(const SlaveView& sensing, const SlaveView& conveyor);
 void printReport(uint32_t now, const Process& process, const SlaveView& conveyor, const SlaveView& sensing);

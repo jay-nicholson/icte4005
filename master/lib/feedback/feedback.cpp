@@ -24,7 +24,7 @@ DecodeResult decodeConveyor(const uint8_t* bytes, uint8_t length, SlaveView& vie
   if (length != CONVEYOR_REPLY_LENGTH) return DECODE_BAD_LENGTH;
   uint8_t state = bytes[OFFSET_STATE];
   uint8_t fault = bytes[OFFSET_FAULT];
-  if (state > CONVEYOR_FAULT) return DECODE_BAD_STATE;
+  if (state > CONVEYOR_SWEEPING) return DECODE_BAD_STATE;
   DecodeResult result = checkFaultPair(state, fault, CONVEYOR_FAULT);
   if (result != DECODE_OK) return result;
   view.state = state;
@@ -47,8 +47,10 @@ DecodeResult decodeSensing(const uint8_t* bytes, uint8_t length, SlaveView& view
   view.fault = fault;
   view.uptime = readUint32LittleEndian(bytes + OFFSET_UPTIME);
   view.live = live;
-  view.reed1Edges = readUint16LittleEndian(bytes + OFFSET_SENSING_REED1_EDGES);
-  view.reed2Edges = readUint16LittleEndian(bytes + OFFSET_SENSING_REED2_EDGES);
+  view.channel1Edges = readUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL1_EDGES);
+  view.channel2Edges = readUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL2_EDGES);
+  view.channel1Level = readUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL1_LEVEL);
+  view.channel2Level = readUint16LittleEndian(bytes + OFFSET_SENSING_CHANNEL2_LEVEL);
   return DECODE_OK;
 }
 
@@ -68,8 +70,10 @@ void SlaveView::begin(SlaveKind slaveKind) {
   uptime = 0;
   steps = 0;
   live = 0;
-  reed1Edges = 0;
-  reed2Edges = 0;
+  channel1Edges = 0;
+  channel2Edges = 0;
+  channel1Level = 0;
+  channel2Level = 0;
   lastUptimeChangeMs = 0;
 }
 
@@ -89,7 +93,7 @@ DecodeResult SlaveView::noteReply(uint32_t now, const uint8_t* bytes, uint8_t le
     rebooted = decreased32(previous.uptime, uptime);
     bool counterDecreased = (kind == SLAVE_CONVEYOR)
         ? decreased32(previous.steps, steps)
-        : (decreased16(previous.reed1Edges, reed1Edges) || decreased16(previous.reed2Edges, reed2Edges));
+        : (decreased16(previous.channel1Edges, channel1Edges) || decreased16(previous.channel2Edges, channel2Edges));
     if (counterDecreased && !rebooted) result = DECODE_COUNTER_DECREASED;
   }
   if (result != DECODE_OK) {

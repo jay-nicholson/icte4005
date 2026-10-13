@@ -2,13 +2,13 @@
 
 [Shared contract](../CONTRACT.md) · [Build instructions](../README.md#platformio)
 
-**The I2C contract is unchanged.** This board replaces the two reed switches with two linear Hall sensors and adds an optional LDR presence gate. The master still receives two debounced channels and their closing-edge counts, so no master, conveyor or `CONTRACT.md` change is needed. In the contract and code, "reed 1" and "reed 2" now mean channel 1 and channel 2; the names are kept so the wire format stays identical.
+**The I2C contract is unchanged.** This board replaces the two channel switches with two linear Hall sensors and adds an optional LDR presence gate. The master still receives two debounced channels and their closing-edge counts, so no master, conveyor or `CONTRACT.md` change is needed. In the contract and code, "channel 1" and "channel 2" now mean channel 1 and channel 2; the names are kept so the wire format stays identical.
 
 Channel 1 is puck arrival at the load/discharge end (Hall 1). Channel 2 is magnetic detection at the stop point (Hall 2, optionally gated by the LDR).
 
-## Why Hall instead of reeds
+## Why Hall instead of channels
 
-A reed is a binary snap switch with mechanical hysteresis, and its trigger depends on gap and magnet orientation. A linear Hall sensor gives a graded reading, so the threshold is tuned from measured data. The front end adds:
+A channel is a binary snap switch with mechanical hysteresis, and its trigger depends on gap and magnet orientation. A linear Hall sensor gives a graded reading, so the threshold is tuned from measured data. The front end adds:
 
 | Stage | Purpose |
 | --- | --- |

@@ -59,16 +59,16 @@ void printHelp() {
 void printNotice(Notice notice) {
   switch (notice) {
     case NOTICE_NONE: return;
-    case NOTICE_START_NOT_CALIBRATED: Serial.println(F("start refused: not calibrated, set allowances in config.h")); return;
+    case NOTICE_START_NOT_CALIBRATED: Serial.println(F("start refused: not calibrated, set FORWARD_ALLOWANCE_STEPS and PADDLE_STEPS in config.h")); return;
     case NOTICE_START_NOT_READY: Serial.println(F("start refused: slave feedback not fresh")); return;
-    case NOTICE_START_REED_ACTIVE: Serial.println(F("start refused: a reed is closed, move the puck before the reeds")); return;
-    case NOTICE_ACK_REED1_ACTIVE: Serial.println(F("ack refused: reed 1 is closed")); return;
+    case NOTICE_START_CHANNEL_ACTIVE: Serial.println(F("start refused: a channel is closed, move the puck before the sensors")); return;
     case NOTICE_IGNORED: Serial.println(F("command ignored in this state")); return;
     case NOTICE_INIT_WAITING: Serial.println(F("initialising: waiting for both slaves")); return;
-    case NOTICE_INIT_REEDS_ACTIVE: Serial.println(F("initialising: clear the reeds")); return;
+    case NOTICE_INIT_CHANNELS_ACTIVE: Serial.println(F("initialising: clear the sensors")); return;
     case NOTICE_BENCH_ENTERED: Serial.println(F("bench mode: raw sends enabled, reset to leave")); return;
     case NOTICE_RAW_SENT: return;
     case NOTICE_STOP_ALREADY: Serial.println(F("already stopped")); return;
+    case NOTICE_SWEEP_IN_PROGRESS: Serial.println(F("sweep in progress, wait for it to finish")); return;
     case NOTICE_RESUMED: Serial.println(F("resumed")); return;
   }
 }
@@ -89,13 +89,13 @@ static void printBits(uint8_t value, uint8_t bitCount) {
   for (int8_t bit = bitCount - 1; bit >= 0; bit--) Serial.print((value >> bit) & 1);
 }
 
-void printReedEvent(const SlaveView& sensing, const SlaveView& conveyor) {
-  Serial.print(F("reed live="));
+void printChannelEvent(const SlaveView& sensing, const SlaveView& conveyor) {
+  Serial.print(F("channel live="));
   printBits(sensing.live, 2);
   Serial.print(F(" edges="));
-  Serial.print(sensing.reed1Edges);
+  Serial.print(sensing.channel1Edges);
   Serial.print('/');
-  Serial.print(sensing.reed2Edges);
+  Serial.print(sensing.channel2Edges);
   Serial.print(F(" steps="));
   Serial.println(conveyor.steps);
 }
@@ -140,9 +140,13 @@ void printReport(uint32_t now, const Process& process, const SlaveView& conveyor
   Serial.print(F(" live="));
   printBits(sensing.live, 2);
   Serial.print(F(" edges="));
-  Serial.print(sensing.reed1Edges);
+  Serial.print(sensing.channel1Edges);
   Serial.print('/');
-  Serial.print(sensing.reed2Edges);
+  Serial.print(sensing.channel2Edges);
+  Serial.print(F(" level="));
+  Serial.print(sensing.channel1Level);
+  Serial.print('/');
+  Serial.print(sensing.channel2Level);
 
   uint32_t delta, limit;
   if (process.travel(conveyor.steps, delta, limit)) {
