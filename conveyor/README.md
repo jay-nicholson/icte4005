@@ -2,7 +2,7 @@
 
 [Shared contract](../CONTRACT.md) · [Build instructions](../README.md#platformio)
 
-Seed code is in place. Import the proven motor library, pins and speed from the working sketch into the motor section of `src/main.cpp`. Confirm reverse operation before integration. Do not upload the seed over working demonstration firmware without checking the motor section first.
+The proven standalone sketch's motor driver is integrated: a 28BYJ-48 on a ULN2003, half-stepped directly from four pins, no library. Set the pins and `MM_PER_HALF_STEP` in `src/main.cpp` to the assembled rig.
 
 ## What this board owns
 
@@ -11,10 +11,24 @@ Stepping, direction, a cumulative step count and its own contact watchdog. It ac
 ## Code layout
 
 - `lib/conveyor_logic`: the state machine and the reply encoder. Pure C++, so the master's host tests run it directly.
-- `src/main.cpp`: the motor section with three hooks, the Wire link and the publish loop.
+- `src/main.cpp`: the half-step driver, fixed-speed stepping, bench keys, the Wire link and the publish loop. The ejector paddle code is present behind `EJECTOR_ENABLED`, off by default, for the planned ejection cycle.
 - `../shared/slave_link.h`: Wire slave boilerplate shared with the sensing board.
 
-The owner changes the motor section only: library, pins, steps per revolution and step interval. Keep the hooks: a step is emitted only when `motor()` asks for one, and every emitted step calls `countStep()` once. Do not reset the count on stop or reversal.
+A step is emitted only when `motor()` asks for one, and every emitted half-step calls `countStep()` once. One contract step is one half-step. The coils are released whenever the belt is not stepping. Do not reset the count on stop or reversal.
+
+## Wiring and settings
+
+| Item | Value |
+| --- | --- |
+| Belt motor | ULN2003 IN1 to IN4 on D4, D5, D6, D7 |
+| Step unit | half-step, 4096 per revolution |
+| `MM_PER_HALF_STEP` | 0.0307 from the standalone sketch; re-measure with `c` |
+| Belt speed | 15 mm/s fixed; the driver caps at about 1000 half-steps per second |
+| Direction | flip `FORWARD_DIRECTION` if the belt runs backwards |
+
+## Bench keys
+
+Serial at 9600. `g`, `b` and `s` send the same commands the master sends and pass the same guards. `c` runs exactly 4096 half-steps then stops; measure the travel and set `MM_PER_HALF_STEP` to travel in millimetres divided by 4096. Do not type bench keys while the master is running a cycle.
 
 ## States keyed to commands
 
@@ -40,4 +54,4 @@ Direct reversal is rejected: the master confirms STOPPED before the opposite com
 
 ## Verification
 
-Demonstrate both directions, responsive stop, repeated-command behaviour, rejected direct reversal, continuous step count, contact timeout, recovery to STOPPED when reads resume, and no motion without a new command. Measure stop latency under load and steps per millimetre on the assembled belt. No encoder or stall detection is assumed.
+Demonstrate both directions, responsive stop, repeated-command behaviour, rejected direct reversal, continuous step count, contact timeout, recovery to STOPPED when reads resume, and no motion without a new command. Measure stop latency under load and half-steps per millimetre on the assembled belt with the `c` key. No encoder or stall detection is assumed.

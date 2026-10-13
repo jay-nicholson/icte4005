@@ -118,14 +118,13 @@ void test_magnetic_puck_full_cycle() {
   TEST_ASSERT_TRUE(world.runUntil(MASTER_WAIT_ACK, 2000));
   TEST_ASSERT_EQUAL(CONVEYOR_STOPPED, world.conveyorLogic.state());
   TEST_ASSERT_TRUE(world.puckMm > REED2_MM - REED_HALF_WINDOW_MM);
-  TEST_ASSERT_TRUE(world.sensingLogic.amberOn());
+  TEST_ASSERT_EQUAL(LIVE_REED2, world.sensingLogic.live());
   world.operate(OPERATOR_ACK);
   TEST_ASSERT_TRUE(world.runUntil(MASTER_OVERRUN, 3000));
   TEST_ASSERT_TRUE(world.runUntil(MASTER_READY, 3000));
   TEST_ASSERT_EQUAL(CONVEYOR_STOPPED, world.conveyorLogic.state());
   TEST_ASSERT_TRUE(world.puckMm < REED1_MM - REED_HALF_WINDOW_MM);
-  TEST_ASSERT_FALSE(world.sensingLogic.greenOn());
-  TEST_ASSERT_FALSE(world.sensingLogic.amberOn());
+  TEST_ASSERT_EQUAL(0, world.sensingLogic.live());
   TEST_ASSERT_EQUAL(MASTER_FAULT_NONE, world.master.fault());
 }
 
@@ -167,7 +166,6 @@ void test_slaves_fault_when_master_stops_polling() {
   TEST_ASSERT_EQUAL(CONVEYOR_FAULT, world.conveyorLogic.state());
   TEST_ASSERT_EQUAL(FAULT_CONTACT_LOST, world.conveyorLogic.fault());
   TEST_ASSERT_EQUAL(MOTOR_OFF, world.conveyorLogic.motor());
-  TEST_ASSERT_TRUE(world.sensingLogic.redOn());
   world.masterPolls = true;
   world.runFor(300);
   ASSERT_STATE(world, MASTER_FAULT);

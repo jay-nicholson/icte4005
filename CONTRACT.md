@@ -9,8 +9,8 @@ Slaves report what they measure and what they are doing. The master gives those 
 | Board | Owns | Reports | Accepts |
 | --- | --- | --- | --- |
 | Conveyor | Stepping, direction, cumulative step count, its contact watchdog | Motion state, fault, uptime, steps | `g`, `b`, `s` |
-| Sensing | Debounce, cumulative edge count per reed, its LEDs from live reed levels, its contact watchdog | Health, fault, uptime, live mask, two edge counts | Nothing |
-| Master | Every phase, baseline, allowance, acknowledgement and system fault; operator Serial; system andon | Serial report and andon | `start`, `stop`, `resume`, `ack` |
+| Sensing | Debounce, cumulative edge count per channel, its contact watchdog | Health, fault, uptime, live mask, two edge counts | Nothing |
+| Master | Every phase, baseline, allowance, acknowledgement and system fault; operator Serial; the only andon | Serial report and andon | `start`, `stop`, `resume`, `ack` |
 
 ## Agreed operation
 
@@ -53,11 +53,7 @@ A direction change requires confirmed STOPPED first. No speed command exists in 
 
 ## Slave watchdog and faults
 
-After the first status read, no status read for 1,000 ms causes a local FAULT with CONTACT_LOST: the conveyor stops stepping, the sensing board shows red. When reads resume, the board clears CONTACT_LOST on its own: the conveyor returns to STOPPED and never resumes motion by itself; the sensing board returns to OK. This lets a master reset recover the system. LOCAL covers any fault the board detects in its own hardware; it latches until that board is reset. The master never writes a fault into a slave.
-
-## Sensing LEDs
-
-Green while reed 1 reads closed. Amber while reed 2 reads closed. Red while the board is in FAULT. Off otherwise. The LEDs show the local reading only. Process phase is shown on the master andon.
+After the first status read, no status read for 1,000 ms causes a local FAULT with CONTACT_LOST: the conveyor stops stepping and reports FAULT, the sensing board reports FAULT. When reads resume, the board clears CONTACT_LOST on its own: the conveyor returns to STOPPED and never resumes motion by itself; the sensing board returns to OK. This lets a master reset recover the system. LOCAL covers any fault the board detects in its own hardware; it latches until that board is reset. The master never writes a fault into a slave.
 
 ## Master rules
 
@@ -76,9 +72,9 @@ Green while reed 1 reads closed. Amber while reed 2 reads closed. Red while the 
 
 Timing values are bench defaults, not safety guarantees. Software stop is not an emergency-stop system. Step allowances are based on emitted motion; they cannot diagnose a motor that receives steps but does not move.
 
-## Master andon
+## Andon
 
-Off in INITIALISING, READY and BENCH. Green while a cycle is moving or stopping. Amber in WAIT_ACK and PAUSED. Red in FAULT.
+The master drives the only andon. Off in INITIALISING, READY and BENCH. Green while a cycle is moving or stopping. Amber in WAIT_ACK and PAUSED. Red in FAULT, including a slave fault. Slaves have no status lights.
 
 ## Normal sequence
 
@@ -109,4 +105,4 @@ sequenceDiagram
 
 Measure fixed speed, step unit, steps/mm, reed spacing, forward/return allowances, discharge overrun, debounce, sample interval and stopping/polling margin. Master-observed events are delayed by polling; account for this in calibration. Never reset a baseline on repeated replies.
 
-Import the working motor sketch to confirm library, driver, pins, supply, reverse support and idle-coil behaviour. Confirm reed/LED wiring and polarity. Use common ground, Uno SDA/A4 and SCL/A5, suitable pull-ups and a compatible motor driver/supply. Never drive coils from GPIO. Screen, buzzer, Teleplot formatting and speed control are stretch work. Actual ejection remains unverified without an additional sensor.
+The conveyor drives a 28BYJ-48 through a ULN2003 by direct half-stepping; one contract step is one half-step and the coils are released when stopped. Confirm reed/LED wiring and polarity. Use common ground, Uno SDA/A4 and SCL/A5, suitable pull-ups and a compatible motor driver/supply. Never drive coils from GPIO. Screen, buzzer, Teleplot formatting and speed control are stretch work. Actual ejection remains unverified without an additional sensor.
