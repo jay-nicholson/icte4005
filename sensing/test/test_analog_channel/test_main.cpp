@@ -125,6 +125,9 @@ void test_local_fault_is_reported_and_keeps_first_reason() {
   other.serviceWatchdog(true);
   other.raiseLocalFault();
   TEST_ASSERT_EQUAL(FAULT_CONTACT_LOST, other.fault());
+  other.serviceWatchdog(false);
+  TEST_ASSERT_EQUAL(SENSING_FAULT, other.state());
+  TEST_ASSERT_EQUAL(FAULT_LOCAL, other.fault());
 }
 
 void test_wire_format_is_unchanged() {

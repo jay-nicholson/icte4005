@@ -19,7 +19,6 @@ static SerialAction parseLine(char* text, OperatorCommand& operatorCommand) {
   if (equals(text, "start")) operatorCommand.kind = OPERATOR_START;
   else if (equals(text, "stop")) operatorCommand.kind = OPERATOR_STOP;
   else if (equals(text, "resume")) operatorCommand.kind = OPERATOR_RESUME;
-  else if (equals(text, "ack")) operatorCommand.kind = OPERATOR_ACK;
   else if (equals(text, "bench")) operatorCommand.kind = OPERATOR_BENCH;
   else if (equals(text, "status")) return SERIAL_STATUS;
   else if (equals(text, "help") || equals(text, "?")) return SERIAL_HELP;
@@ -43,7 +42,7 @@ SerialAction serialPoll(OperatorCommand& operatorCommand) {
       line[lineLength] = 0;
       uint8_t length = lineLength;
       lineLength = 0;
-      if (length == 0) return SERIAL_NONE;
+      if (length == 0) continue;
       return parseLine(line, operatorCommand);
     }
     if (lineLength < sizeof(line) - 1) line[lineLength++] = character;
@@ -52,19 +51,17 @@ SerialAction serialPoll(OperatorCommand& operatorCommand) {
 }
 
 void printHelp() {
-  Serial.println(F("commands: start | stop | resume | ack | status | bench | send <c|s> <char> | help"));
+  Serial.println(F("commands: start | stop | resume | status | bench | send <c|s> <char> | help"));
   Serial.println(F("bench: raw sends for slave testing and calibration, stop still works, leave by reset"));
 }
 
 void printNotice(Notice notice) {
   switch (notice) {
     case NOTICE_NONE: return;
-    case NOTICE_START_NOT_CALIBRATED: Serial.println(F("start refused: not calibrated, set FORWARD_ALLOWANCE_STEPS and PADDLE_STEPS in config.h")); return;
+    case NOTICE_START_NOT_CALIBRATED: Serial.println(F("start refused: not calibrated, set CHANNEL_SPACING_STEPS and PADDLE_STEPS in config.h")); return;
     case NOTICE_START_NOT_READY: Serial.println(F("start refused: slave feedback not fresh")); return;
-    case NOTICE_START_CHANNEL_ACTIVE: Serial.println(F("start refused: a channel is closed, move the puck before the sensors")); return;
     case NOTICE_IGNORED: Serial.println(F("command ignored in this state")); return;
     case NOTICE_INIT_WAITING: Serial.println(F("initialising: waiting for both slaves")); return;
-    case NOTICE_INIT_CHANNELS_ACTIVE: Serial.println(F("initialising: clear the sensors")); return;
     case NOTICE_BENCH_ENTERED: Serial.println(F("bench mode: raw sends enabled, reset to leave")); return;
     case NOTICE_RAW_SENT: return;
     case NOTICE_STOP_ALREADY: Serial.println(F("already stopped")); return;
@@ -118,10 +115,6 @@ void printReport(uint32_t now, const Process& process, const SlaveView& conveyor
     Serial.print(masterFaultName(process.fault()));
     if (process.stopUnconfirmed()) Serial.print(F(" STOP_UNCONFIRMED"));
   }
-  if (process.state() == MASTER_PAUSED || process.state() == MASTER_STOPPING) {
-    Serial.print(F(" phase="));
-    Serial.print(masterStateName(process.savedPhase()));
-  }
   if (!process.calibrated()) Serial.print(F(" NOT_CALIBRATED"));
 
   Serial.print(F(" | CONV target="));
@@ -148,16 +141,28 @@ void printReport(uint32_t now, const Process& process, const SlaveView& conveyor
   Serial.print('/');
   Serial.print(sensing.channel2Level);
 
-  uint32_t delta, limit;
-  if (process.travel(conveyor.steps, delta, limit)) {
-    Serial.print(F(" | travel~"));
-    Serial.print(delta);
-    Serial.print('/');
-    Serial.print(limit);
-    Serial.print(F(" steps"));
+  const Counters& counts = process.counters();
+  Serial.print(F(" | safe="));
+  Serial.print(counts.safe);
+  Serial.print(F(" magnetic="));
+  Serial.print(counts.magnetic);
+  Serial.print(F(" ejected="));
+  Serial.print(counts.ejected);
+  if (counts.unmatchedMagnetic) {
+    Serial.print(F(" unmatched="));
+    Serial.print(counts.unmatchedMagnetic);
+  }
+  Serial.print(F(" pending="));
+  Serial.print(process.pendingPucks());
+  Serial.print('/');
+  Serial.print(process.pendingEjects());
+  uint32_t remaining;
+  if (process.nextEject(conveyor.steps, remaining)) {
+    Serial.print(F(" eject_in="));
+    Serial.print(remaining);
     if (STEPS_PER_MM > 0) {
       Serial.print(F(" ("));
-      Serial.print(delta / STEPS_PER_MM, 0);
+      Serial.print(remaining / STEPS_PER_MM, 0);
       Serial.print(F(" mm)"));
     }
   }

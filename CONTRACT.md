@@ -1,4 +1,4 @@
-# Shared contract — v3 design
+# Shared contract — v4 design
 
 This file defines the external interface. `shared/contract.h` carries the same numbers as named constants for all three boards; change both together. Subsystem READMEs explain local work; they do not override these rules. Use Arduino Wire without another messaging library, CRC, sessions or command IDs.
 
@@ -9,14 +9,14 @@ Slaves report what they measure and what they are doing. The master gives those 
 | Board | Owns | Reports | Accepts |
 | --- | --- | --- | --- |
 | Conveyor | Stepping, the ejector paddle, cumulative step count, its contact watchdog | Motion state, fault, uptime, steps | `g`, `s`, `e`; `b` for bench use |
-| Sensing | Debounce, cumulative edge count per channel, its contact watchdog | Health, fault, uptime, live mask, two edge counts | Nothing |
-| Master | Every phase, baseline, allowance, acknowledgement and system fault; operator Serial; the only andon | Serial report and andon | `start`, `stop`, `resume`, `ack` |
+| Sensing | Debounce, cumulative edge count per channel, its contact watchdog | Health, fault, uptime, live mask, two edge counts, two signal levels | Nothing |
+| Master | Puck classification, the eject queue, counters and system fault; operator Serial; the only andon | Serial report and andon | `start`, `stop`, `resume` |
 
 ## Agreed operation
 
-Load one puck before channel 1. Run forward. A channel 1 edge records arrival; a channel 2 edge completes magnetic detection. Stop and wait for operator acknowledgement. Then run forward a calibrated distance to the ejector paddle, eject the puck with one paddle sweep and stop. Prepare the next cycle only after both channels read open.
+Channel 1 is a light sensor that sees every puck. Channel 2 is a Hall sensor about 30 mm further along that sees only magnetic pucks. The belt runs continuously from Start until Stop. Each channel 1 edge opens a presence window. A channel 2 edge inside the oldest open window classifies that puck as magnetic; a window that reaches the channel spacing allowance without one classifies the puck as safe. Every magnetic puck is queued for ejection at its channel 2 step count plus the paddle distance; when the belt reaches that count the master commands one paddle sweep, the belt pauses for the sweep, then continues. Several pucks may be on the belt; ejects happen in arrival order.
 
-No channel activity before arrival is normal. There is no no-detection deadline or non-magnetic classification. Operator Stop pauses the current phase. Resume preserves the phase and travel progress. Missing an expected channel causes a latched master FAULT. Remove all pucks and reset the master to clear it. Reset a slave only if it shows LOCAL. Never resume a faulted cycle.
+A channel 2 edge with no window open is still magnetic and still ejected; the master counts it as unmatched so the operator can see that the light sensor missed one. Nothing about puck spacing is a fault. Operator Stop pauses the belt and keeps the windows, the queue and the counters; Resume continues. Counters persist until the master is reset. Missing feedback, invalid replies, a slave fault, unexpected motion or an unconfirmed sweep cause a latched master FAULT. Remove the pucks and reset the master to clear it.
 
 ## Wire format
 
@@ -38,6 +38,8 @@ The master initiates every transaction. A command is two bytes: the ASCII comman
 | 9–10, sensing | channel2_edges: uint16 | Debounced closing edges on channel 2 since boot. |
 | 11–12, sensing | channel1_level: uint16 | Diagnostic: channel 1 signal level in the board's own units. The master only displays it. |
 | 13–14, sensing | channel2_level: uint16 | Diagnostic: channel 2 signal level. The master only displays it. |
+
+Channel 1 is the presence sensor and channel 2 the magnetic sensor. The sensing board does not know what either edge means; the master pairs them.
 
 Multi-byte fields are little-endian. Send numeric bytes, not ASCII digits. Serialize explicitly; do not transmit a C++ struct. Publish coherent snapshots from the main loop at least every 20 ms. FAULT requires a nonzero fault; healthy states require zero. Preserve the first fault reason.
 
@@ -65,19 +67,19 @@ After the first status read, no status read for 1,000 ms causes a local FAULT wi
 3. Send a motion command once. Confirm it only from a reply received after it was sent, within 300 ms. Retry only `s`, once per poll, until confirmed. Never extend the original deadline. `e` is confirmed by SWEEPING within 300 ms; the sweep must end in STOPPED within 6,000 ms.
 4. Mark feedback UNKNOWN after 300 ms without a valid reply. Invalid length, values or reserved bits cause FAULT during a cycle; in INITIALISING, READY or BENCH they only block progress, because a bus being wired produces them. A counter that decreases without a detected reboot counts as invalid. UNKNOWN during a cycle causes FAULT; UNKNOWN in the idle states only blocks progress. A slave reporting CONTACT_LOST in the idle states also only blocks progress, because the next reads clear it; any other slave fault, in any state, causes FAULT.
 5. Fault if returned uptime does not advance for 300 ms. A slave reboot during a cycle causes FAULT; in INITIALISING or READY it returns the master to INITIALISING.
-6. Start saves both channel edge counts. Arrival is a channel 1 count above that baseline. Magnetic is a channel 2 count above its baseline. A channel 2 rise with no channel 1 rise causes REED_ORDER. Both rising in the same poll counts as magnetic.
-7. At arrival, save the step baseline from the same poll. Apply the forward allowance to reach channel 2. Exceeding it without the expected event causes FAULT in every state, including paused. An expected event seen in the same poll wins over the limit.
-8. Acknowledge is accepted whatever the live channels read; it saves the approach step baseline and sends `g`. When the step delta reaches the calibrated paddle distance, send `e`. Confirm SWEEPING, wait for STOPPED, then require both channels open within 300 ms. A held channel causes FAULT. Then READY.
-9. Stop saves the active phase and sends `s` each poll until STOPPED is confirmed. Then the destination is WAIT_ACK if magnetic, EJECTING if the approach distance is complete, otherwise PAUSED. Stop during a sweep is refused; the sweep is short and the belt is already stopped. Resume re-evaluates the same facts before requesting motion. Baselines survive pauses.
+6. Start sends `g` and begins tracking from the current edge counts. From then on every channel 1 edge opens a presence window stamped with the belt step count from the same poll. Every channel 2 edge closes the oldest open window as magnetic, or counts as unmatched if none is open, and pushes an eject target of the current step count plus the paddle distance. A window older than the channel spacing allowance closes as safe.
+7. When the belt step count reaches the head of the eject queue, send `e`. Confirm SWEEPING within 300 ms and STOPPED within 6,000 ms, then pop the queue, count the eject and send `g` again. Stop during a sweep is refused and takes effect when the sweep ends.
+8. Windows and eject targets are step counts, so they survive pauses unchanged. The queue holds sixteen entries; overflow is a FAULT because it cannot happen with pucks on a belt of this length.
+9. Stop sends `s` each poll until STOPPED is confirmed, then PAUSED. Resume sends `g`, or `e` if an eject is already due.
 10. Stop has priority over any other operator command received in the same poll interval.
 11. On system fault: send `s` each poll until a post-fault reply confirms STOPPED, show red on the master andon, latch, and report STOP UNCONFIRMED until the confirmation arrives. No command clears a master fault.
 12. Full reset means stop the drive as needed, remove all pucks and reset the master. Reset a slave only if it reports LOCAL.
 
-Timing values are bench defaults, not safety guarantees. Software stop is not an emergency-stop system. Step allowances are based on emitted motion; they cannot diagnose a motor that receives steps but does not move.
+Timing values are bench defaults, not safety guarantees. Software stop is not an emergency-stop system. Step distances are based on emitted motion; they cannot diagnose a motor that receives steps but does not move.
 
 ## Andon
 
-The master drives the only andon. Amber blinking in INITIALISING while it waits for the slaves. Off in READY and BENCH. Green while a cycle is moving or stopping. Amber steady in WAIT_ACK and PAUSED. Red in FAULT, including a slave fault. Slaves have no status lights.
+The master drives the only andon. Amber blinking in INITIALISING while it waits for the slaves. Off in READY and BENCH. Green while running, stopping or sweeping. Amber steady in PAUSED. Red in FAULT, including a slave fault. Slaves have no status lights.
 
 ## Normal sequence
 
@@ -87,25 +89,24 @@ sequenceDiagram
     participant M as Master
     participant S as Sensing
     participant C as Conveyor
-    O->>M: Load / Start
-    Note over M,S: Save channel edge baselines
+    O->>M: Start
     M->>C: g / confirm FORWARD
-    S-->>M: channel 1 edges rose
-    Note over M,C: Save step baseline
-    S-->>M: channel 2 edges rose
-    M->>C: s / confirm STOPPED
-    O->>M: Acknowledge
-    Note over M,C: Save approach step baseline
-    M->>C: g / confirm FORWARD
-    Note over M,C: Step delta reaches the paddle distance
+    S-->>M: channel 1 edge
+    Note over M: open presence window at this step count
+    S-->>M: channel 2 edge
+    Note over M: magnetic, queue eject at steps + paddle distance
+    S-->>M: channel 1 edge, no channel 2 within the spacing
+    Note over M: safe, counted
+    Note over M,C: belt reaches the eject target
     M->>C: e / confirm SWEEPING
     C-->>M: STOPPED after the sweep
-    S-->>M: both channels open
-    Note over O,M: Ready for next puck
+    M->>C: g / confirm FORWARD
+    O->>M: Stop
+    M->>C: s / confirm STOPPED
 ```
 
 ## Calibration and integration inputs
 
-Measure fixed speed, step unit, steps/mm, channel spacing, the forward allowance, the stop-to-paddle distance, the sweep duration, debounce, sample interval and stopping/polling margin. Master-observed events are delayed by polling; account for this in calibration. Never reset a baseline on repeated replies.
+Measure fixed speed, step unit, steps/mm, the channel spacing allowance, the Hall-to-paddle distance, the sweep duration, debounce, sample interval and polling margin. Master-observed events are delayed by polling; account for this in calibration. Never reset a baseline on repeated replies.
 
 The conveyor drives a 28BYJ-48 through a ULN2003 by direct half-stepping; one contract step is one half-step and the coils are released when stopped. Confirm channel/LED wiring and polarity. Use common ground, Uno SDA/A4 and SCL/A5, suitable pull-ups and a compatible motor driver/supply. Never drive coils from GPIO. Screen, buzzer, Teleplot formatting and speed control are stretch work. Actual ejection remains unverified without an additional sensor; both channels reading open after the sweep is the only evidence.

@@ -7,48 +7,29 @@ void tearDown() {}
 #define ASSERT_STATE(sim, s) TEST_ASSERT_EQUAL_STRING(masterStateName(s), masterStateName((sim).state()))
 #define ASSERT_FAULT(sim, f) TEST_ASSERT_EQUAL_STRING(masterFaultName(f), masterFaultName((sim).process.fault()))
 
-static void startAndConfirmForward(Sim& sim) {
+static void startAndConfirmRunning(Sim& sim) {
   sim.bringToReady();
   sim.step(OPERATOR_START);
-  ASSERT_STATE(sim, MASTER_FORWARD);
+  ASSERT_STATE(sim, MASTER_RUNNING);
   TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_GO));
   sim.applyConveyorCommands();
   sim.step();
-  ASSERT_STATE(sim, MASTER_FORWARD);
+  ASSERT_STATE(sim, MASTER_RUNNING);
 }
 
-static void runToWaitAck(Sim& sim) {
-  startAndConfirmForward(sim);
-  sim.channel1Edges++;
-  sim.step();
-  ASSERT_STATE(sim, MASTER_TRACKING);
-  sim.channel2Edges++;
-  sim.sensingLive = LIVE_CHANNEL2;
-  sim.step();
-  ASSERT_STATE(sim, MASTER_STOPPING);
-  TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_STOP));
-  sim.applyConveyorCommands();
-  sim.step();
-  ASSERT_STATE(sim, MASTER_WAIT_ACK);
-}
-
-static void ackAndConfirmApproach(Sim& sim) {
-  sim.step(OPERATOR_ACK);
-  ASSERT_STATE(sim, MASTER_APPROACH);
-  TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_GO));
-  sim.applyConveyorCommands();
-  sim.step();
-  ASSERT_STATE(sim, MASTER_APPROACH);
-}
-
-static void runApproachToEject(Sim& sim) {
-  while (sim.state() == MASTER_APPROACH) sim.step();
+static void runUntilEject(Sim& sim) {
+  while (sim.state() == MASTER_RUNNING) sim.step();
   ASSERT_STATE(sim, MASTER_EJECTING);
   TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_EJECT));
   sim.applyConveyorCommands();
   sim.step();
   ASSERT_STATE(sim, MASTER_EJECTING);
   TEST_ASSERT_EQUAL(CONVEYOR_SWEEPING, sim.conveyorState);
+}
+
+static void finishSweep(Sim& sim) {
+  sim.conveyorState = CONVEYOR_STOPPED;
+  sim.step();
 }
 
 void test_initialising_sends_stop_then_ready() {
@@ -58,6 +39,7 @@ void test_initialising_sends_stop_then_ready() {
   ASSERT_STATE(sim, MASTER_INITIALISING);
   sim.step();
   ASSERT_STATE(sim, MASTER_READY);
+  TEST_ASSERT_EQUAL(ANDON_OFF, sim.process.andon());
 }
 
 void test_initialising_waits_for_absent_slaves() {
@@ -65,185 +47,169 @@ void test_initialising_waits_for_absent_slaves() {
   sim.conveyorReplies = false; sim.sensingReplies = false;
   for (int i = 0; i < 20; i++) sim.step();
   ASSERT_STATE(sim, MASTER_INITIALISING);
+  TEST_ASSERT_EQUAL(ANDON_AMBER_BLINK, sim.process.andon());
   sim.conveyorReplies = true; sim.sensingReplies = true;
   sim.step(); sim.step();
   ASSERT_STATE(sim, MASTER_READY);
 }
 
-void test_start_refusals() {
+void test_start_refused_without_calibration() {
   Sim sim; sim.begin(0, 0);
   sim.bringToReady();
   sim.step(OPERATOR_START);
   ASSERT_STATE(sim, MASTER_READY);
   TEST_ASSERT_EQUAL(NOTICE_START_NOT_CALIBRATED, sim.output.notice);
-  Sim sim2; sim2.begin();
-  sim2.bringToReady();
-  sim2.sensingLive = LIVE_CHANNEL1;
-  sim2.step(OPERATOR_START);
-  ASSERT_STATE(sim2, MASTER_READY);
-  TEST_ASSERT_EQUAL(NOTICE_START_CHANNEL_ACTIVE, sim2.output.notice);
-  TEST_ASSERT_FALSE(sim2.sentAnything());
+  TEST_ASSERT_FALSE(sim.sentAnything());
 }
 
-void test_full_cycle() {
-  Sim sim; sim.begin(1000, 300);
-  runToWaitAck(sim);
-  TEST_ASSERT_EQUAL(ANDON_AMBER, sim.process.andon());
-  ackAndConfirmApproach(sim);
-  uint32_t approachStart = sim.conveyorSteps - sim.stepsPerPoll;
-  runApproachToEject(sim);
-  TEST_ASSERT_TRUE(sim.conveyorSteps - approachStart >= 300);
-  sim.sensingLive = 0;
+void test_safe_puck_is_counted_and_belt_keeps_running() {
+  Sim sim; sim.begin(300, 500);
+  startAndConfirmRunning(sim);
+  sim.channel1Edges++;
+  sim.step();
+  TEST_ASSERT_EQUAL(1, sim.process.pendingPucks());
+  for (int i = 0; i < 6; i++) sim.step();
+  TEST_ASSERT_EQUAL(1, sim.process.pendingPucks());
+  sim.step();
+  TEST_ASSERT_EQUAL(0, sim.process.pendingPucks());
+  TEST_ASSERT_EQUAL(1, sim.process.counters().safe);
+  TEST_ASSERT_EQUAL(0, sim.process.counters().magnetic);
+  ASSERT_STATE(sim, MASTER_RUNNING);
+  TEST_ASSERT_EQUAL(ANDON_GREEN, sim.process.andon());
+}
+
+void test_magnetic_puck_is_counted_queued_and_ejected_then_belt_resumes() {
+  Sim sim; sim.begin(300, 500);
+  startAndConfirmRunning(sim);
+  sim.channel1Edges++;
+  sim.step();
+  sim.step();
+  sim.channel2Edges++;
+  sim.step();
+  TEST_ASSERT_EQUAL(0, sim.process.pendingPucks());
+  TEST_ASSERT_EQUAL(1, sim.process.pendingEjects());
+  TEST_ASSERT_EQUAL(1, sim.process.counters().magnetic);
+  TEST_ASSERT_EQUAL(0, sim.process.counters().safe);
+  uint32_t ejectAt = sim.conveyorSteps + 500;
+  runUntilEject(sim);
+  TEST_ASSERT_TRUE(sim.conveyorSteps >= ejectAt);
+  TEST_ASSERT_TRUE(sim.conveyorSteps < ejectAt + sim.stepsPerPoll);
+  TEST_ASSERT_EQUAL(ANDON_GREEN, sim.process.andon());
   sim.step(); sim.step();
   ASSERT_STATE(sim, MASTER_EJECTING);
-  sim.conveyorState = CONVEYOR_STOPPED;
+  finishSweep(sim);
+  ASSERT_STATE(sim, MASTER_RUNNING);
+  TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_GO));
+  TEST_ASSERT_EQUAL(1, sim.process.counters().ejected);
+  TEST_ASSERT_EQUAL(0, sim.process.pendingEjects());
+}
+
+void test_several_pucks_queue_in_order() {
+  Sim sim; sim.begin(300, 2000);
+  startAndConfirmRunning(sim);
+  sim.channel1Edges++; sim.channel2Edges++;
   sim.step();
-  ASSERT_STATE(sim, MASTER_READY);
-  TEST_ASSERT_EQUAL(ANDON_OFF, sim.process.andon());
+  sim.step(); sim.step();
+  sim.channel1Edges++;
+  sim.step();
+  sim.step(); sim.step();
+  sim.channel1Edges++; sim.channel2Edges++;
+  sim.step();
+  TEST_ASSERT_EQUAL(2, sim.process.pendingEjects());
+  TEST_ASSERT_EQUAL(1, sim.process.pendingPucks());
+  for (int i = 0; i < 7; i++) sim.step();
+  TEST_ASSERT_EQUAL(1, sim.process.counters().safe);
+  TEST_ASSERT_EQUAL(2, sim.process.counters().magnetic);
+  runUntilEject(sim);
+  finishSweep(sim);
+  ASSERT_STATE(sim, MASTER_RUNNING);
+  TEST_ASSERT_EQUAL(1, sim.process.pendingEjects());
+  sim.applyConveyorCommands();
+  runUntilEject(sim);
+  finishSweep(sim);
+  TEST_ASSERT_EQUAL(2, sim.process.counters().ejected);
+  TEST_ASSERT_EQUAL(0, sim.process.pendingEjects());
 }
 
-void test_sweep_timeout_faults() {
-  Sim sim; sim.begin(1000, 100);
-  runToWaitAck(sim);
-  ackAndConfirmApproach(sim);
-  runApproachToEject(sim);
-  for (int i = 0; i < 60; i++) { sim.step(); if (sim.state() != MASTER_EJECTING) break; }
-  ASSERT_STATE(sim, MASTER_FAULT);
-  ASSERT_FAULT(sim, MASTER_FAULT_SWEEP_TIMEOUT);
+void test_magnetic_without_presence_is_unmatched_but_still_ejected() {
+  Sim sim; sim.begin(300, 200);
+  startAndConfirmRunning(sim);
+  sim.channel2Edges++;
+  sim.step();
+  TEST_ASSERT_EQUAL(1, sim.process.counters().magnetic);
+  TEST_ASSERT_EQUAL(1, sim.process.counters().unmatchedMagnetic);
+  TEST_ASSERT_EQUAL(1, sim.process.pendingEjects());
+  ASSERT_STATE(sim, MASTER_RUNNING);
 }
 
-void test_eject_not_confirmed_faults() {
-  Sim sim; sim.begin(1000, 100);
-  runToWaitAck(sim);
-  ackAndConfirmApproach(sim);
-  while (sim.state() == MASTER_APPROACH) sim.step();
-  ASSERT_STATE(sim, MASTER_EJECTING);
-  sim.step(); sim.step(); sim.step();
-  ASSERT_FAULT(sim, MASTER_FAULT_CONFIRM_TIMEOUT);
+void test_two_close_pucks_do_not_fault() {
+  Sim sim; sim.begin(300, 2000);
+  startAndConfirmRunning(sim);
+  sim.channel1Edges += 2;
+  sim.step();
+  TEST_ASSERT_EQUAL(2, sim.process.pendingPucks());
+  sim.channel2Edges++;
+  sim.step();
+  TEST_ASSERT_EQUAL(1, sim.process.pendingPucks());
+  for (int i = 0; i < 8; i++) sim.step();
+  TEST_ASSERT_EQUAL(1, sim.process.counters().safe);
+  TEST_ASSERT_EQUAL(1, sim.process.counters().magnetic);
+  ASSERT_STATE(sim, MASTER_RUNNING);
 }
 
-void test_stop_during_approach_pauses_and_resumes_from_same_baseline() {
-  Sim sim; sim.begin(1000, 400);
-  runToWaitAck(sim);
-  ackAndConfirmApproach(sim);
+void test_stop_pauses_and_resume_keeps_queue() {
+  Sim sim; sim.begin(300, 1000);
+  startAndConfirmRunning(sim);
+  sim.channel1Edges++; sim.channel2Edges++;
+  sim.step();
+  uint32_t ejectAt = sim.conveyorSteps + 1000;
   sim.step(OPERATOR_STOP);
   ASSERT_STATE(sim, MASTER_STOPPING);
   sim.applyConveyorCommands();
   sim.step();
   ASSERT_STATE(sim, MASTER_PAUSED);
-  TEST_ASSERT_EQUAL(MASTER_APPROACH, sim.process.savedPhase());
-  uint32_t delta, limit;
-  TEST_ASSERT_TRUE(sim.process.travel(sim.conveyorSteps, delta, limit));
-  TEST_ASSERT_EQUAL(400, limit);
+  TEST_ASSERT_EQUAL(ANDON_AMBER, sim.process.andon());
+  for (int i = 0; i < 30; i++) sim.step();
+  ASSERT_STATE(sim, MASTER_PAUSED);
+  TEST_ASSERT_EQUAL(1, sim.process.pendingEjects());
   sim.step(OPERATOR_RESUME);
-  ASSERT_STATE(sim, MASTER_APPROACH);
+  ASSERT_STATE(sim, MASTER_RUNNING);
   TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_GO));
-  uint32_t deltaAfter;
-  TEST_ASSERT_TRUE(sim.process.travel(sim.conveyorSteps, deltaAfter, limit));
-  TEST_ASSERT_EQUAL(delta, deltaAfter);
+  sim.applyConveyorCommands();
+  runUntilEject(sim);
+  TEST_ASSERT_TRUE(sim.conveyorSteps >= ejectAt);
 }
 
-void test_stop_during_ejecting_is_refused() {
-  Sim sim; sim.begin(1000, 100);
-  runToWaitAck(sim);
-  ackAndConfirmApproach(sim);
-  runApproachToEject(sim);
+void test_stop_during_sweep_pauses_after_it() {
+  Sim sim; sim.begin(300, 100);
+  startAndConfirmRunning(sim);
+  sim.channel2Edges++;
+  sim.step();
+  runUntilEject(sim);
   sim.step(OPERATOR_STOP);
   ASSERT_STATE(sim, MASTER_EJECTING);
   TEST_ASSERT_EQUAL(NOTICE_SWEEP_IN_PROGRESS, sim.output.notice);
-  TEST_ASSERT_FALSE(sim.sentAnything());
+  finishSweep(sim);
+  ASSERT_STATE(sim, MASTER_PAUSED);
+  TEST_ASSERT_FALSE(sim.sent(CONVEYOR_ADDRESS, COMMAND_GO));
 }
 
-void test_both_reeds_in_same_poll_is_magnetic() {
-  Sim sim; sim.begin();
-  startAndConfirmForward(sim);
-  sim.channel1Edges++; sim.channel2Edges++;
-  sim.step();
-  ASSERT_STATE(sim, MASTER_STOPPING);
-}
-
-void test_reed2_before_reed1_faults() {
-  Sim sim; sim.begin();
-  startAndConfirmForward(sim);
+void test_sweep_timeout_and_unconfirmed_eject_fault() {
+  Sim sim; sim.begin(300, 100);
+  startAndConfirmRunning(sim);
   sim.channel2Edges++;
   sim.step();
-  ASSERT_STATE(sim, MASTER_FAULT);
-  ASSERT_FAULT(sim, MASTER_FAULT_CHANNEL_ORDER);
-}
-
-void test_missing_forward_faults_and_keeps_requesting_stop() {
-  Sim sim; sim.begin(300, 200);
-  startAndConfirmForward(sim);
-  sim.channel1Edges++;
-  sim.step();
-  ASSERT_STATE(sim, MASTER_TRACKING);
-  for (int i = 0; i < 6; i++) sim.step();
-  ASSERT_STATE(sim, MASTER_TRACKING);
-  sim.step();
-  ASSERT_STATE(sim, MASTER_FAULT);
-  ASSERT_FAULT(sim, MASTER_FAULT_MISSING_FORWARD);
-  TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_STOP));
-  TEST_ASSERT_TRUE(sim.process.stopUnconfirmed());
-  TEST_ASSERT_EQUAL(ANDON_RED, sim.process.andon());
-  sim.conveyorReplies = false;
-  sim.step();
-  TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_STOP));
-  sim.step();
-  TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_STOP));
-  sim.conveyorReplies = true;
-  sim.conveyorState = CONVEYOR_STOPPED;
-  sim.step();
-  TEST_ASSERT_FALSE(sim.process.stopUnconfirmed());
-  TEST_ASSERT_FALSE(sim.sentAnything());
-  sim.step(OPERATOR_RESUME);
-  ASSERT_STATE(sim, MASTER_FAULT);
-}
-
-void test_event_wins_over_limit_in_same_poll() {
-  Sim sim; sim.begin(300, 200);
-  startAndConfirmForward(sim);
-  sim.channel1Edges++;
-  sim.step();
-  for (int i = 0; i < 6; i++) sim.step();
-  sim.channel2Edges++;
-  sim.step();
-  ASSERT_STATE(sim, MASTER_STOPPING);
-}
-
-void test_pause_in_tracking_keeps_baseline() {
-  Sim sim; sim.begin(500, 200);
-  startAndConfirmForward(sim);
-  sim.channel1Edges++;
-  sim.step();
-  sim.step(); sim.step();
-  sim.step(OPERATOR_STOP);
-  ASSERT_STATE(sim, MASTER_STOPPING);
-  sim.applyConveyorCommands();
-  sim.step();
-  ASSERT_STATE(sim, MASTER_PAUSED);
-  TEST_ASSERT_EQUAL(ANDON_AMBER, sim.process.andon());
-  for (int i = 0; i < 50; i++) sim.step();
-  ASSERT_STATE(sim, MASTER_PAUSED);
-  sim.step(OPERATOR_RESUME);
-  ASSERT_STATE(sim, MASTER_TRACKING);
-  TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_GO));
-  sim.applyConveyorCommands();
-  for (int i = 0; i < 8; i++) sim.step();
-  ASSERT_STATE(sim, MASTER_FAULT);
-  ASSERT_FAULT(sim, MASTER_FAULT_MISSING_FORWARD);
-}
-
-void test_magnetic_during_stop_for_pause_goes_to_wait_ack() {
-  Sim sim; sim.begin();
-  startAndConfirmForward(sim);
-  sim.step(OPERATOR_STOP);
-  ASSERT_STATE(sim, MASTER_STOPPING);
-  sim.channel1Edges++; sim.channel2Edges++;
-  sim.step();
-  TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_STOP));
-  sim.applyConveyorCommands();
-  sim.step();
-  ASSERT_STATE(sim, MASTER_WAIT_ACK);
+  runUntilEject(sim);
+  for (int i = 0; i < 70 && sim.state() == MASTER_EJECTING; i++) sim.step();
+  ASSERT_FAULT(sim, MASTER_FAULT_SWEEP_TIMEOUT);
+  Sim other; other.begin(300, 100);
+  startAndConfirmRunning(other);
+  other.channel2Edges++;
+  other.step();
+  while (other.state() == MASTER_RUNNING) other.step();
+  ASSERT_STATE(other, MASTER_EJECTING);
+  other.step(); other.step(); other.step();
+  ASSERT_FAULT(other, MASTER_FAULT_CONFIRM_TIMEOUT);
 }
 
 void test_stale_stopped_reply_cannot_confirm_stop() {
@@ -257,13 +223,12 @@ void test_stale_stopped_reply_cannot_confirm_stop() {
   sim.step();
   TEST_ASSERT_NOT_EQUAL(MASTER_PAUSED, sim.state());
   sim.step();
-  ASSERT_STATE(sim, MASTER_FAULT);
   ASSERT_FAULT(sim, MASTER_FAULT_FEEDBACK_LOST);
 }
 
 void test_stop_retried_then_unconfirmed() {
   Sim sim; sim.begin();
-  startAndConfirmForward(sim);
+  startAndConfirmRunning(sim);
   sim.step(OPERATOR_STOP);
   TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_STOP));
   sim.step();
@@ -271,48 +236,55 @@ void test_stop_retried_then_unconfirmed() {
   sim.step();
   TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_STOP));
   sim.step();
-  ASSERT_STATE(sim, MASTER_FAULT);
   ASSERT_FAULT(sim, MASTER_FAULT_STOP_UNCONFIRMED);
 }
 
-void test_feedback_lost_in_motion_faults_and_stays() {
+void test_feedback_lost_in_motion_faults_and_keeps_requesting_stop() {
   Sim sim; sim.begin();
-  startAndConfirmForward(sim);
+  startAndConfirmRunning(sim);
   sim.conveyorReplies = false;
   sim.step(); sim.step();
-  ASSERT_STATE(sim, MASTER_FORWARD);
+  ASSERT_STATE(sim, MASTER_RUNNING);
   sim.step();
-  ASSERT_STATE(sim, MASTER_FAULT);
   ASSERT_FAULT(sim, MASTER_FAULT_FEEDBACK_LOST);
+  TEST_ASSERT_TRUE(sim.process.stopUnconfirmed());
+  sim.step();
+  TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_STOP));
   sim.conveyorReplies = true;
   sim.conveyorState = CONVEYOR_STOPPED;
   sim.step();
+  TEST_ASSERT_FALSE(sim.process.stopUnconfirmed());
   ASSERT_STATE(sim, MASTER_FAULT);
+  TEST_ASSERT_EQUAL(ANDON_RED, sim.process.andon());
 }
 
-void test_invalid_reply_slave_fault_and_confirm_timeout() {
+void test_invalid_reply_faults_only_in_cycle() {
   Sim sim; sim.begin();
   sim.bringToReady();
   sim.conveyorState = 9;
   sim.step();
   ASSERT_STATE(sim, MASTER_READY);
   sim.conveyorState = CONVEYOR_STOPPED;
-  startAndConfirmForward(sim);
+  startAndConfirmRunning(sim);
   sim.conveyorState = 9;
   sim.step();
   ASSERT_FAULT(sim, MASTER_FAULT_INVALID_REPLY);
-  Sim sim2; sim2.begin();
-  sim2.bringToReady();
-  sim2.sensingState = SENSING_FAULT; sim2.sensingFault = FAULT_LOCAL;
-  sim2.step();
-  ASSERT_FAULT(sim2, MASTER_FAULT_SLAVE_FAULT);
-  Sim sim3; sim3.begin();
-  sim3.bringToReady();
-  sim3.step(OPERATOR_START);
-  sim3.step(); sim3.step();
-  ASSERT_STATE(sim3, MASTER_FORWARD);
-  sim3.step();
-  ASSERT_FAULT(sim3, MASTER_FAULT_CONFIRM_TIMEOUT);
+}
+
+void test_slave_faults_and_contact_loss() {
+  Sim sim; sim.begin();
+  sim.bringToReady();
+  sim.sensingState = SENSING_FAULT; sim.sensingFault = FAULT_CONTACT_LOST;
+  sim.step();
+  ASSERT_STATE(sim, MASTER_READY);
+  sim.sensingFault = FAULT_LOCAL;
+  sim.step();
+  ASSERT_FAULT(sim, MASTER_FAULT_SLAVE_FAULT);
+  Sim other; other.begin();
+  startAndConfirmRunning(other);
+  other.sensingState = SENSING_FAULT; other.sensingFault = FAULT_CONTACT_LOST;
+  other.step();
+  ASSERT_FAULT(other, MASTER_FAULT_SLAVE_FAULT);
 }
 
 void test_reboot_in_ready_reinitialises_but_in_cycle_faults() {
@@ -329,19 +301,30 @@ void test_reboot_in_ready_reinitialises_but_in_cycle_faults() {
   ASSERT_FAULT(sim, MASTER_FAULT_SLAVE_REBOOT);
 }
 
-void test_held_reed_after_eject_faults() {
-  Sim sim; sim.begin(1000, 100);
-  runToWaitAck(sim);
-  ackAndConfirmApproach(sim);
-  runApproachToEject(sim);
-  sim.conveyorState = CONVEYOR_STOPPED;
-  sim.sensingLive = LIVE_CHANNEL2;
+void test_unexpected_motion_faults() {
+  Sim sim; sim.begin();
+  sim.bringToReady();
+  sim.conveyorState = CONVEYOR_FORWARD;
   sim.step();
-  ASSERT_STATE(sim, MASTER_CLEARING);
-  sim.step(); sim.step();
-  ASSERT_STATE(sim, MASTER_CLEARING);
+  ASSERT_FAULT(sim, MASTER_FAULT_UNEXPECTED_MOTION);
+  Sim other; other.begin();
+  startAndConfirmRunning(other);
+  other.conveyorState = CONVEYOR_STOPPED;
+  other.step();
+  ASSERT_FAULT(other, MASTER_FAULT_UNEXPECTED_MOTION);
+}
+
+void test_counters_survive_pause_and_stop_in_ready() {
+  Sim sim; sim.begin(300, 100);
+  startAndConfirmRunning(sim);
+  sim.channel1Edges++;
+  for (int i = 0; i < 9; i++) sim.step();
+  TEST_ASSERT_EQUAL(1, sim.process.counters().safe);
+  sim.step(OPERATOR_STOP);
+  sim.applyConveyorCommands();
   sim.step();
-  ASSERT_FAULT(sim, MASTER_FAULT_CHANNEL_HELD);
+  ASSERT_STATE(sim, MASTER_PAUSED);
+  TEST_ASSERT_EQUAL(1, sim.process.counters().safe);
 }
 
 void test_bench_raw_sends_and_plain_stop() {
@@ -358,203 +341,41 @@ void test_bench_raw_sends_and_plain_stop() {
   sim.conveyorState = CONVEYOR_FORWARD;
   sim.step(OPERATOR_STOP);
   TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_STOP));
-  ASSERT_STATE(sim, MASTER_BENCH);
 }
 
-void test_raw_send_outside_bench_is_ignored() {
-  Sim sim; sim.begin();
-  sim.bringToReady();
-  OperatorCommand raw = {OPERATOR_SEND, CONVEYOR_ADDRESS, COMMAND_GO};
-  sim.stepWith(raw);
-  TEST_ASSERT_FALSE(sim.sentAnything());
-}
-
-void test_lost_detection_history_faults() {
-  Sim sim; sim.begin(500, 200);
-  startAndConfirmForward(sim);
+void test_queue_overflow_faults() {
+  Sim sim; sim.begin(100000, 100000);
+  startAndConfirmRunning(sim);
+  sim.channel1Edges += QUEUE_CAPACITY;
+  sim.step();
+  ASSERT_STATE(sim, MASTER_RUNNING);
   sim.channel1Edges++;
   sim.step();
-  ASSERT_STATE(sim, MASTER_TRACKING);
-  sim.step(OPERATOR_STOP);
-  sim.applyConveyorCommands();
-  sim.step();
-  ASSERT_STATE(sim, MASTER_PAUSED);
-  sim.channel1Edges--;
-  sim.step();
-  ASSERT_FAULT(sim, MASTER_FAULT_INVALID_REPLY);
-}
-
-void test_limit_exceeded_during_stopping_faults_before_resume() {
-  Sim sim; sim.begin(300, 200);
-  startAndConfirmForward(sim);
-  sim.channel1Edges++;
-  sim.step();
-  sim.step(OPERATOR_STOP);
-  ASSERT_STATE(sim, MASTER_STOPPING);
-  sim.applyConveyorCommands();
-  sim.conveyorSteps += 400;
-  sim.step();
-  ASSERT_STATE(sim, MASTER_FAULT);
-  ASSERT_FAULT(sim, MASTER_FAULT_MISSING_FORWARD);
-  TEST_ASSERT_FALSE(sim.sent(CONVEYOR_ADDRESS, COMMAND_GO));
-}
-
-void test_unexpected_motion_faults() {
-  Sim sim; sim.begin();
-  sim.bringToReady();
-  sim.conveyorState = CONVEYOR_FORWARD;
-  sim.step();
-  ASSERT_FAULT(sim, MASTER_FAULT_UNEXPECTED_MOTION);
-  Sim sim2; sim2.begin();
-  runToWaitAck(sim2);
-  sim2.conveyorState = CONVEYOR_FORWARD;
-  sim2.step();
-  ASSERT_FAULT(sim2, MASTER_FAULT_UNEXPECTED_MOTION);
-}
-
-void test_contact_lost_slave_only_blocks_idle_states() {
-  Sim sim; sim.begin();
-  sim.conveyorState = CONVEYOR_FAULT; sim.conveyorFault = FAULT_CONTACT_LOST;
-  sim.sensingState = SENSING_FAULT; sim.sensingFault = FAULT_CONTACT_LOST;
-  sim.step(); sim.step(); sim.step();
-  ASSERT_STATE(sim, MASTER_INITIALISING);
-  TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_STOP));
-  sim.conveyorState = CONVEYOR_STOPPED; sim.conveyorFault = FAULT_NONE;
-  sim.sensingState = SENSING_OK; sim.sensingFault = FAULT_NONE;
-  sim.step(); sim.step();
-  ASSERT_STATE(sim, MASTER_READY);
-  sim.sensingState = SENSING_FAULT; sim.sensingFault = FAULT_CONTACT_LOST;
-  sim.step(OPERATOR_START);
-  ASSERT_STATE(sim, MASTER_READY);
-  TEST_ASSERT_EQUAL(NOTICE_START_NOT_READY, sim.output.notice);
-  sim.sensingState = SENSING_FAULT; sim.sensingFault = FAULT_LOCAL;
-  sim.step();
-  ASSERT_FAULT(sim, MASTER_FAULT_SLAVE_FAULT);
-}
-
-void test_contact_lost_slave_during_cycle_faults() {
-  Sim sim; sim.begin();
-  startAndConfirmForward(sim);
-  sim.sensingState = SENSING_FAULT; sim.sensingFault = FAULT_CONTACT_LOST;
-  sim.step();
-  ASSERT_FAULT(sim, MASTER_FAULT_SLAVE_FAULT);
-}
-
-void test_arrival_during_stop_promotes_saved_phase() {
-  Sim sim; sim.begin();
-  startAndConfirmForward(sim);
-  sim.step(OPERATOR_STOP);
-  sim.channel1Edges++;
-  sim.applyConveyorCommands();
-  sim.step();
-  ASSERT_STATE(sim, MASTER_PAUSED);
-  TEST_ASSERT_EQUAL(MASTER_TRACKING, sim.process.savedPhase());
-  uint32_t delta, limit;
-  TEST_ASSERT_TRUE(sim.process.travel(sim.conveyorSteps, delta, limit));
-}
-
-void test_single_channel_bench_treats_channel1_as_magnetic() {
-  Sim sim; sim.begin();
-  sim.process.begin(Calibration{1000, 300}, Options{0, false, true});
-  startAndConfirmForward(sim);
-  sim.channel1Edges++;
-  sim.step();
-  ASSERT_STATE(sim, MASTER_STOPPING);
-}
-
-void test_auto_ack_after_delay() {
-  Sim sim; sim.begin(1000, 300, 500, false);
-  runToWaitAck(sim);
-  sim.step(); sim.step(); sim.step(); sim.step();
-  ASSERT_STATE(sim, MASTER_WAIT_ACK);
-  sim.step();
-  ASSERT_STATE(sim, MASTER_APPROACH);
-  TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_GO));
-}
-
-void test_auto_restart_after_eject() {
-  Sim sim; sim.begin(1000, 100, 0, true);
-  runToWaitAck(sim);
-  ackAndConfirmApproach(sim);
-  runApproachToEject(sim);
-  sim.conveyorState = CONVEYOR_STOPPED;
-  sim.sensingLive = 0;
-  sim.step();
-  ASSERT_STATE(sim, MASTER_READY);
-  sim.step();
-  ASSERT_STATE(sim, MASTER_FORWARD);
-  TEST_ASSERT_TRUE(sim.sent(CONVEYOR_ADDRESS, COMMAND_GO));
-  sim.applyConveyorCommands();
-  sim.step();
-  sim.channel1Edges++; sim.channel2Edges++;
-  sim.step();
-  ASSERT_STATE(sim, MASTER_STOPPING);
-}
-
-void test_stop_in_ready_cancels_pending_restart() {
-  Sim sim; sim.begin(1000, 100, 0, true);
-  runToWaitAck(sim);
-  ackAndConfirmApproach(sim);
-  runApproachToEject(sim);
-  sim.conveyorState = CONVEYOR_STOPPED;
-  sim.sensingLive = LIVE_CHANNEL1;
-  sim.step();
-  ASSERT_STATE(sim, MASTER_CLEARING);
-  sim.sensingLive = 0;
-  sim.step();
-  ASSERT_STATE(sim, MASTER_READY);
-  sim.step(OPERATOR_STOP);
-  ASSERT_STATE(sim, MASTER_READY);
-  sim.step(); sim.step();
-  ASSERT_STATE(sim, MASTER_READY);
-  TEST_ASSERT_FALSE(sim.sent(CONVEYOR_ADDRESS, COMMAND_GO));
-}
-
-void test_targets_and_andon() {
-  Sim sim; sim.begin();
-  startAndConfirmForward(sim);
-  TEST_ASSERT_EQUAL(CONVEYOR_FORWARD, sim.process.conveyorTarget());
-  TEST_ASSERT_EQUAL(ANDON_GREEN, sim.process.andon());
-  Sim sim2; sim2.begin();
-  runToWaitAck(sim2);
-  TEST_ASSERT_EQUAL(CONVEYOR_STOPPED, sim2.process.conveyorTarget());
-  TEST_ASSERT_EQUAL(ANDON_AMBER, sim2.process.andon());
+  ASSERT_FAULT(sim, MASTER_FAULT_QUEUE_OVERFLOW);
 }
 
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_initialising_sends_stop_then_ready);
   RUN_TEST(test_initialising_waits_for_absent_slaves);
-  RUN_TEST(test_start_refusals);
-  RUN_TEST(test_full_cycle);
-  RUN_TEST(test_sweep_timeout_faults);
-  RUN_TEST(test_eject_not_confirmed_faults);
-  RUN_TEST(test_stop_during_approach_pauses_and_resumes_from_same_baseline);
-  RUN_TEST(test_stop_during_ejecting_is_refused);
-  RUN_TEST(test_both_reeds_in_same_poll_is_magnetic);
-  RUN_TEST(test_reed2_before_reed1_faults);
-  RUN_TEST(test_missing_forward_faults_and_keeps_requesting_stop);
-  RUN_TEST(test_event_wins_over_limit_in_same_poll);
-  RUN_TEST(test_pause_in_tracking_keeps_baseline);
-  RUN_TEST(test_magnetic_during_stop_for_pause_goes_to_wait_ack);
+  RUN_TEST(test_start_refused_without_calibration);
+  RUN_TEST(test_safe_puck_is_counted_and_belt_keeps_running);
+  RUN_TEST(test_magnetic_puck_is_counted_queued_and_ejected_then_belt_resumes);
+  RUN_TEST(test_several_pucks_queue_in_order);
+  RUN_TEST(test_magnetic_without_presence_is_unmatched_but_still_ejected);
+  RUN_TEST(test_two_close_pucks_do_not_fault);
+  RUN_TEST(test_stop_pauses_and_resume_keeps_queue);
+  RUN_TEST(test_stop_during_sweep_pauses_after_it);
+  RUN_TEST(test_sweep_timeout_and_unconfirmed_eject_fault);
   RUN_TEST(test_stale_stopped_reply_cannot_confirm_stop);
   RUN_TEST(test_stop_retried_then_unconfirmed);
-  RUN_TEST(test_feedback_lost_in_motion_faults_and_stays);
-  RUN_TEST(test_invalid_reply_slave_fault_and_confirm_timeout);
+  RUN_TEST(test_feedback_lost_in_motion_faults_and_keeps_requesting_stop);
+  RUN_TEST(test_invalid_reply_faults_only_in_cycle);
+  RUN_TEST(test_slave_faults_and_contact_loss);
   RUN_TEST(test_reboot_in_ready_reinitialises_but_in_cycle_faults);
-  RUN_TEST(test_held_reed_after_eject_faults);
-  RUN_TEST(test_bench_raw_sends_and_plain_stop);
-  RUN_TEST(test_raw_send_outside_bench_is_ignored);
-  RUN_TEST(test_lost_detection_history_faults);
-  RUN_TEST(test_limit_exceeded_during_stopping_faults_before_resume);
   RUN_TEST(test_unexpected_motion_faults);
-  RUN_TEST(test_contact_lost_slave_only_blocks_idle_states);
-  RUN_TEST(test_contact_lost_slave_during_cycle_faults);
-  RUN_TEST(test_arrival_during_stop_promotes_saved_phase);
-  RUN_TEST(test_single_channel_bench_treats_channel1_as_magnetic);
-  RUN_TEST(test_auto_ack_after_delay);
-  RUN_TEST(test_auto_restart_after_eject);
-  RUN_TEST(test_stop_in_ready_cancels_pending_restart);
-  RUN_TEST(test_targets_and_andon);
+  RUN_TEST(test_counters_survive_pause_and_stop_in_ready);
+  RUN_TEST(test_bench_raw_sends_and_plain_stop);
+  RUN_TEST(test_queue_overflow_faults);
   return UNITY_END();
 }

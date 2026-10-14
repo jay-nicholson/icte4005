@@ -1,14 +1,14 @@
 # ICTE4005 magnetic-puck conveyor
 
-Three Arduino Unos coordinate a magnetic-puck detection and return demonstration. Load one puck before the sensing station. A channel 1 edge records arrival; a channel 2 edge causes a magnetic-detection stop. After operator acknowledgement, the belt runs forward a calibrated distance to the ejector paddle, one sweep ejects the puck, and the belt stops. Then the next cycle is prepared. This demonstrates distributed control, not material identification or verified automatic sorting.
+Three Arduino Unos coordinate a magnetic-puck detection and return demonstration. Pucks are loaded onto a continuously running belt. A light sensor counts every puck; a Hall sensor 30 mm later identifies the magnetic ones. Each magnetic puck is queued and ejected by a paddle sweep a calibrated distance further along; safe pucks ride through and are counted. Several pucks can be on the belt at once. This demonstrates distributed control, not material identification or verified automatic sorting.
 
-Slaves report what they measure; the master gives it meaning. The conveyor accepts three process commands. The sensing board accepts none. No channel activity means continue until the operator stops. Stop pauses the phase; Resume retains progress. Missing an expected channel causes a latched master fault. Remove all pucks and reset the master before a new cycle. Step counting positions the puck at the paddle; both channels reading open after the sweep is the only evidence of ejection.
+Slaves report what they measure; the master gives it meaning. The conveyor accepts three process commands. The sensing board accepts none. Stop pauses the belt and keeps the queue and counters; Resume continues. Feedback and motion faults latch on the master; reset it to clear them. Step counting positions each puck at the paddle; the counters are the master's record, not a verified ejection.
 
 ## Boards and documents
 
 - [Master](master/README.md): process coordination, polling, travel checks, Serial reporting and the system andon.
 - [Conveyor](conveyor/README.md): fixed-speed stepper motion, the ejector paddle and issued-step feedback.
-- [Sensing](sensing/README.md): two Hall channels, an optional light gate and edge counts.
+- [Sensing](sensing/README.md): light presence channel, Hall magnetic channel and edge counts.
 - [Shared contract](CONTRACT.md): exact messages, state values, fault rules and calibration inputs.
 
 ```mermaid
@@ -17,7 +17,8 @@ flowchart LR
     Master <-->|Commands / status| Conveyor[Conveyor Uno]
     Master <-->|Commands / status| Sensing[Sensing Uno]
     Conveyor --> Driver[Driver + five-wire stepper]
-    Halls[Hall sensors] --> Sensing
+    Light[Light sensor] --> Sensing
+    Hall[Hall sensor] --> Sensing
     Master --> Andon[System andon]
 ```
 
@@ -46,6 +47,6 @@ Validation on 12 October 2026: all three projects compile with the standard Plat
 
 ## Scope and remaining work
 
-V2 uses fixed speed, two Hall channels, a master andon and a Serial operator interface. Screen, buzzer, Teleplot formatting and adjustable speed are stretch work. No non-magnetic classification or automatic no-detection timeout is included. Uptime supports feedback diagnostics; issued steps support estimated travel.
+V4 uses fixed speed, a light sensor and a Hall channel, an ejector paddle, a master andon and a Serial operator interface. A screen showing the report is stretch work. Screen, buzzer, Teleplot formatting and adjustable speed are stretch work. No non-magnetic classification or automatic no-detection timeout is included. Uptime supports feedback diagnostics; issued steps support estimated travel.
 
 The operating sequence is agreed. Remaining inputs are the working motor sketch, hardware/library details and measured calibration values. Each subsystem README defines its owner's deliverables and verification evidence. Protocol rules belong in the shared contract; local implementation details belong in subsystem READMEs; project scope belongs here.

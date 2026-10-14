@@ -6,13 +6,9 @@
 enum MasterState {
   MASTER_INITIALISING = 0,
   MASTER_READY,
-  MASTER_FORWARD,
-  MASTER_TRACKING,
+  MASTER_RUNNING,
   MASTER_STOPPING,
-  MASTER_WAIT_ACK,
-  MASTER_APPROACH,
   MASTER_EJECTING,
-  MASTER_CLEARING,
   MASTER_PAUSED,
   MASTER_BENCH,
   MASTER_FAULT
@@ -20,8 +16,6 @@ enum MasterState {
 
 enum MasterFault {
   MASTER_FAULT_NONE = 0,
-  MASTER_FAULT_MISSING_FORWARD,
-  MASTER_FAULT_CHANNEL_ORDER,
   MASTER_FAULT_FEEDBACK_LOST,
   MASTER_FAULT_FEEDBACK_STALE,
   MASTER_FAULT_INVALID_REPLY,
@@ -31,7 +25,7 @@ enum MasterFault {
   MASTER_FAULT_STOP_UNCONFIRMED,
   MASTER_FAULT_SWEEP_TIMEOUT,
   MASTER_FAULT_SLAVE_REBOOT,
-  MASTER_FAULT_CHANNEL_HELD
+  MASTER_FAULT_QUEUE_OVERFLOW
 };
 
 enum OperatorKind {
@@ -39,7 +33,6 @@ enum OperatorKind {
   OPERATOR_START,
   OPERATOR_STOP,
   OPERATOR_RESUME,
-  OPERATOR_ACK,
   OPERATOR_BENCH,
   OPERATOR_SEND
 };
@@ -54,10 +47,8 @@ enum Notice {
   NOTICE_NONE = 0,
   NOTICE_START_NOT_CALIBRATED,
   NOTICE_START_NOT_READY,
-  NOTICE_START_CHANNEL_ACTIVE,
   NOTICE_IGNORED,
   NOTICE_INIT_WAITING,
-  NOTICE_INIT_CHANNELS_ACTIVE,
   NOTICE_BENCH_ENTERED,
   NOTICE_RAW_SENT,
   NOTICE_STOP_ALREADY,
@@ -68,15 +59,19 @@ enum Notice {
 enum AndonColour { ANDON_OFF, ANDON_GREEN, ANDON_AMBER, ANDON_AMBER_BLINK, ANDON_RED };
 
 struct Calibration {
-  uint32_t forwardAllowanceSteps;
-  uint32_t paddleSteps;
-  bool ready() const { return forwardAllowanceSteps > 0 && paddleSteps > 0; }
+  uint32_t channelSpacingSteps;  // presence sensor to magnetic sensor, plus margin
+  uint32_t paddleSteps;          // magnetic sensor to paddle
+  bool ready() const {
+    return channelSpacingSteps > 0 && paddleSteps > 0 && channelSpacingSteps < 0x80000000UL &&
+           paddleSteps < 0x80000000UL;
+  }
 };
 
-struct Options {
-  uint32_t autoAckMs;        // 0 keeps acknowledgement manual
-  bool autoRestart;          // after a clean eject, start the next cycle without Start
-  bool singleChannelBench;   // one sensor fitted: a channel 1 edge also counts as magnetic
+struct Counters {
+  uint16_t safe;
+  uint16_t magnetic;
+  uint16_t unmatchedMagnetic;
+  uint16_t ejected;
 };
 
 struct Request {
@@ -98,38 +93,27 @@ struct ProcessOutput {
   }
 };
 
-// Everything a state handler may know about the slaves. Computed once per tick.
-struct Observation {
-  bool conveyorFresh;
-  bool sensingFresh;
-  bool conveyorStopped;
-  bool conveyorForward;
-  bool conveyorSweeping;
-  bool channelsClear;
-  bool arrived;
-  bool magnetic;
-  bool channelOrderBad;
-  bool forwardOverdue;
-  bool approachDone;
-};
+static const uint8_t QUEUE_CAPACITY = 16;
 
 const char* masterStateName(MasterState state);
 const char* masterFaultName(MasterFault fault);
 
 class Process {
  public:
-  void begin(const Calibration& calibration, const Options& options);
+  void begin(const Calibration& calibration);
   void tick(uint32_t now, SlaveView& conveyor, SlaveView& sensing, const OperatorCommand& operatorCommand,
             ProcessOutput& output);
 
   MasterState state() const { return state_; }
   MasterFault fault() const { return fault_; }
-  MasterState savedPhase() const { return savedPhase_; }
   bool stopUnconfirmed() const { return stopUnconfirmed_; }
   bool calibrated() const { return calibration_.ready(); }
+  const Counters& counters() const { return counters_; }
+  uint8_t pendingPucks() const { return windowCount_; }
+  uint8_t pendingEjects() const { return ejectCount_; }
+  bool nextEject(uint32_t steps, uint32_t& remaining) const;
   uint8_t conveyorTarget() const;
   AndonColour andon() const;
-  bool travel(uint32_t steps, uint32_t& delta, uint32_t& limit) const;
 
  private:
   enum ConfirmResult { CONFIRM_IDLE, CONFIRM_WAITING, CONFIRM_DONE, CONFIRM_TIMED_OUT };
@@ -142,51 +126,41 @@ class Process {
     uint32_t deadline;
   };
 
-  MasterState activePhase() const;
-  bool inForwardPhase() const;
   bool inCycle() const;
-
   void sendMotion(ProcessOutput& output, char command, uint8_t expectedState, bool retryEachPoll, uint32_t now);
   ConfirmResult confirm(const SlaveView& conveyor, ProcessOutput& output, uint32_t now);
   void enterFault(MasterFault reason, ProcessOutput& output, uint32_t now);
   void enterInitialising();
-  void enterStopping(MasterState saved, ProcessOutput& output, uint32_t now);
-  void resetCycle();
-
+  void enterStopping(ProcessOutput& output, uint32_t now);
+  void resetTracking();
   bool checkFeedback(SlaveView& conveyor, SlaveView& sensing, ProcessOutput& output, uint32_t now);
-  void updateBaselines(const SlaveView& conveyor, const SlaveView& sensing);
-  Observation observe(const SlaveView& conveyor, const SlaveView& sensing) const;
-  bool checkProgress(const Observation& seen, ProcessOutput& output, uint32_t now);
-  void startCycle(const SlaveView& conveyor, const SlaveView& sensing, ProcessOutput& output, uint32_t now);
-  void startForward(const Observation& seen, ProcessOutput& output, uint32_t now);
-  void startApproach(const SlaveView& conveyor, ProcessOutput& output, uint32_t now);
+  bool checkMotion(const SlaveView& conveyor, ProcessOutput& output, uint32_t now);
+  void trackPucks(const SlaveView& conveyor, const SlaveView& sensing, ProcessOutput& output, uint32_t now);
+  void expireWindows(uint32_t steps);
+  bool pushWindow(uint32_t steps);
+  void popWindow();
+  bool pushEject(uint32_t target);
+  void popEject();
+  void startBelt(ProcessOutput& output, uint32_t now);
   void startEject(ProcessOutput& output, uint32_t now);
-  void tickEjecting(const SlaveView& conveyor, const Observation& seen, ProcessOutput& output, uint32_t now);
-  void finishStop(const Observation& seen, ProcessOutput& output, uint32_t now);
-  void resume(const SlaveView& conveyor, const SlaveView& sensing, const Observation& seen, ProcessOutput& output,
-              uint32_t now);
-  void tickClearing(const Observation& seen, ProcessOutput& output, uint32_t now);
+  void tickEjecting(const SlaveView& conveyor, ProcessOutput& output, uint32_t now);
 
   MasterState state_;
-  MasterState savedPhase_;
+  MasterState resumeTo_;
   MasterFault fault_;
   Calibration calibration_;
-  Options options_;
-  uint32_t waitAckSinceMs_;
-  bool restartPending_;
   Pending pending_;
   bool initialStopRequested_;
   bool stopUnconfirmed_;
-
-  bool hasReedBaseline_;
-  uint16_t channel1Start_;
-  uint16_t channel2Start_;
-  bool hasEntryBaseline_;
-  uint32_t entryBaseline_;
-  bool hasApproachBaseline_;
-  uint32_t approachBaseline_;
   bool sweepSeen_;
   uint32_t ejectSentMs_;
-  bool clearingWaitStarted_;
-  uint32_t clearingWaitStartMs_;
+
+  bool tracking_;
+  uint16_t lastChannel1Edges_;
+  uint16_t lastChannel2Edges_;
+  uint32_t windows_[QUEUE_CAPACITY];
+  uint8_t windowCount_;
+  uint32_t ejects_[QUEUE_CAPACITY];
+  uint8_t ejectCount_;
+  Counters counters_;
 };

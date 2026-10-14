@@ -1,10 +1,8 @@
-# Sensing Arduino — Hall sensors and LDR gate
+# Sensing Arduino — light presence channel and Hall magnetic channel
 
 [Shared contract](../CONTRACT.md) · [Build instructions](../README.md#platformio)
 
-**The I2C contract is unchanged.** This board replaces the two channel switches with two linear Hall sensors and adds an optional LDR presence gate. The master still receives two debounced channels and their closing-edge counts, so no master, conveyor or `CONTRACT.md` change is needed. In the contract and code, "channel 1" and "channel 2" now mean channel 1 and channel 2; the names are kept so the wire format stays identical.
-
-Channel 1 is puck arrival at the load/discharge end (Hall 1). Channel 2 is magnetic detection at the stop point (Hall 2, optionally gated by the LDR).
+Channel 1 is the LDR light sensor: it closes for every puck that shades it. Channel 2 is the linear Hall sensor about 30 mm further along the belt: it closes only for a magnetic puck. The board reports both as debounced channels with closing-edge counts and signal levels; the master pairs the edges to classify each puck. One Hall is fitted; the second Hall position is unused.
 
 ## Why Hall instead of channels
 
@@ -20,21 +18,12 @@ A channel is a binary snap switch with mechanical hysteresis, and its trigger de
 
 The existing 20 ms debounce and edge counting in `lib/sensing_logic` run unchanged on the output.
 
-## Fusion gate (optional, off by default)
-
-`USE_LIGHT_GATE` in `src/main.cpp`. When true, channel 2 closes only if Hall 2 is active **and** the LDR agrees a puck is physically there. The gate is a decision the master cannot see; if it stays in the design, the cleaner form is to report presence as a live bit and let the master apply the rule. Leave it off for the demo. This rejects a stray field at Hall 2 (stepper-coil pickup, a dropped magnet) that the Hall alone cannot tell from a puck. Host tests show the same transient stray pulse faulting the master with the gate off and being ignored with it on.
-
-Limits, stated plainly:
-- The gate cannot reject a stray field that coincides with a **non-magnetic** puck at the station, because the LDR sees "a puck" either way. It narrows the false-trigger window; it does not close it.
-- It adds a failure mode: ambient light changes can hold the gate shut, so channel 2 never closes and the master latches a missing-arrival fault. Leave it off unless it has been bench-tested in the demo lighting.
-
 ## Wiring
 
 | Item | Connection |
 | --- | --- |
-| Hall 1 (UGN3503UA) | Vcc to 5 V, GND to GND, output to **A0** |
-| Hall 2 (UGN3503UA) | Vcc to 5 V, GND to GND, output to **A1** |
-| LDR module | Power to 5 V and GND, analog output to **A2** |
+| Hall (UGN3503UA), channel 2 | Vcc to 5 V, GND to GND, output to **A0** |
+| LDR module, channel 1 | Power to 5 V and GND, analog output to **A2**, mounted about 30 mm before the Hall |
 | I2C | A4 (SDA) and A5 (SCL) to the master; common ground. Not used for analog. |
 
 Check the UGN3503UA pin order against its datasheet before powering it: wrong-way power can destroy the part. A 0.1 uF ceramic across each Hall's Vcc and GND is good practice. Check the LDR module's silkscreen for the signal pin.
@@ -55,7 +44,7 @@ Build the calibrate environment (`pio run -d sensing -e calibrate -t upload`). O
 
 - `lib/analog_channel`: baseline, filter, deviation, hysteresis and health. Pure C++, host-tested.
 - `lib/sensing_logic`: debounce, counters, reply encoder, plus `raiseLocalFault()`, which latches LOCAL and keeps the first fault reason. CONTACT_LOST clears itself when master reads resume; LOCAL does not.
-- `src/main.cpp`: pins, tuning, sampling loop, fusion, Wire link.
+- `src/main.cpp`: pins, tuning, sampling loop, Wire link.
 - `src/calibrate.cpp`: the bench measuring tool, built by the `calibrate` environment.
 - `../shared/slave_link.h`: Wire slave boilerplate, unchanged.
 

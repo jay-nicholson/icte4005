@@ -102,9 +102,8 @@ void setup() {
   pinMode(ANDON_RED_PIN, OUTPUT);
   conveyor.begin(SLAVE_CONVEYOR);
   sensing.begin(SLAVE_SENSING);
-  Calibration calibration = {FORWARD_ALLOWANCE_STEPS, PADDLE_STEPS};
-  Options options = {AUTO_ACK_MS, AUTO_RESTART, SINGLE_CHANNEL_BENCH};
-  process.begin(calibration, options);
+  Calibration calibration = {CHANNEL_SPACING_STEPS, PADDLE_STEPS};
+  process.begin(calibration);
   stopRequested = false;
   pendingOperatorCommand.kind = OPERATOR_NONE;
   lastNotice = NOTICE_NONE;
@@ -121,12 +120,15 @@ void loop() {
   uint32_t now = millis();
 
   OperatorCommand operatorCommand;
-  switch (serialPoll(operatorCommand)) {
-    case SERIAL_PROCESS_COMMAND: queueOperatorCommand(operatorCommand); break;
-    case SERIAL_STATUS: printReport(now, process, conveyor, sensing); break;
-    case SERIAL_HELP: printHelp(); break;
-    case SERIAL_UNKNOWN: Serial.println(F("unknown command, type help")); break;
-    case SERIAL_NONE: break;
+  SerialAction action;
+  while ((action = serialPoll(operatorCommand)) != SERIAL_NONE) {
+    switch (action) {
+      case SERIAL_PROCESS_COMMAND: queueOperatorCommand(operatorCommand); break;
+      case SERIAL_STATUS: printReport(now, process, conveyor, sensing); break;
+      case SERIAL_HELP: printHelp(); break;
+      case SERIAL_UNKNOWN: Serial.println(F("unknown command, type help")); break;
+      default: break;
+    }
   }
 
   showAndon(process.andon(), now);

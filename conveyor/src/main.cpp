@@ -60,8 +60,7 @@ static void motorService(MotorRequest request, ConveyorLogic& logic) {
     return;
   }
   if (now - lastStepMicros < stepIntervalMicros) return;
-  lastStepMicros += stepIntervalMicros;
-  if (now - lastStepMicros >= stepIntervalMicros) lastStepMicros = now;  // fell behind: resync, no burst
+  lastStepMicros = now;
   beltMotor.step(request == MOTOR_FORWARD ? FORWARD_DIRECTION : -FORWARD_DIRECTION);
   beltEnergised = true;
   logic.countStep();

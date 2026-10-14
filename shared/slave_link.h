@@ -46,7 +46,7 @@ class SlaveLink {
     bool everRead = everRead_;
     uint32_t lastReadMs = lastReadMs_;
     interrupts();
-    return everRead && (now - lastReadMs) >= CONTACT_WATCHDOG_MS;
+    return everRead && (int32_t)(now - lastReadMs) >= (int32_t)CONTACT_WATCHDOG_MS;
   }
 
  private:

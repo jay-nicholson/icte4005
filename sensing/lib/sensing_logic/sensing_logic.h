@@ -35,4 +35,5 @@ class SensingLogic {
   uint16_t channel2Edges_;
   uint16_t channel1Level_;
   uint16_t channel2Level_;
+  bool localFault_;
 };

@@ -24,13 +24,12 @@ struct Sim {
   uint32_t sensingUptime;
   bool sensingReplies;
 
-  void begin(uint32_t forwardAllowance = 1000, uint32_t paddleSteps = 300, uint32_t autoAckMs = 0, bool autoRestart = false) {
+  void begin(uint32_t channelSpacing = 1000, uint32_t paddleSteps = 300) {
     now = 1000;
     conveyor.begin(SLAVE_CONVEYOR);
     sensing.begin(SLAVE_SENSING);
-    Calibration calibration = {forwardAllowance, paddleSteps};
-    Options options = {autoAckMs, autoRestart, false};
-    process.begin(calibration, options);
+    Calibration calibration = {channelSpacing, paddleSteps};
+    process.begin(calibration);
     conveyorState = CONVEYOR_STOPPED; conveyorFault = 0; conveyorSteps = 0; conveyorUptime = 500;
     conveyorReplies = true; stepsPerPoll = 50;
     sensingState = SENSING_OK; sensingFault = 0; sensingLive = 0; channel1Edges = 0; channel2Edges = 0;

@@ -4,13 +4,9 @@ const char* masterStateName(MasterState state) {
   switch (state) {
     case MASTER_INITIALISING: return "INITIALISING";
     case MASTER_READY: return "READY";
-    case MASTER_FORWARD: return "FORWARD";
-    case MASTER_TRACKING: return "TRACKING";
+    case MASTER_RUNNING: return "RUNNING";
     case MASTER_STOPPING: return "STOPPING";
-    case MASTER_WAIT_ACK: return "WAIT_ACK";
-    case MASTER_APPROACH: return "APPROACH";
     case MASTER_EJECTING: return "EJECTING";
-    case MASTER_CLEARING: return "CLEARING";
     case MASTER_PAUSED: return "PAUSED";
     case MASTER_BENCH: return "BENCH";
     case MASTER_FAULT: return "FAULT";
@@ -21,8 +17,6 @@ const char* masterStateName(MasterState state) {
 const char* masterFaultName(MasterFault fault) {
   switch (fault) {
     case MASTER_FAULT_NONE: return "NONE";
-    case MASTER_FAULT_MISSING_FORWARD: return "MISSING_FORWARD";
-    case MASTER_FAULT_CHANNEL_ORDER: return "CHANNEL_ORDER";
     case MASTER_FAULT_FEEDBACK_LOST: return "FEEDBACK_LOST";
     case MASTER_FAULT_FEEDBACK_STALE: return "FEEDBACK_STALE";
     case MASTER_FAULT_INVALID_REPLY: return "INVALID_REPLY";
@@ -32,7 +26,7 @@ const char* masterFaultName(MasterFault fault) {
     case MASTER_FAULT_STOP_UNCONFIRMED: return "STOP_UNCONFIRMED";
     case MASTER_FAULT_SWEEP_TIMEOUT: return "SWEEP_TIMEOUT";
     case MASTER_FAULT_SLAVE_REBOOT: return "SLAVE_REBOOT";
-    case MASTER_FAULT_CHANNEL_HELD: return "CHANNEL_HELD";
+    case MASTER_FAULT_QUEUE_OVERFLOW: return "QUEUE_OVERFLOW";
     default: return "?";
   }
 }
@@ -41,41 +35,31 @@ static bool repliedAfter(const SlaveView& view, uint32_t sentMs) {
   return view.repliedThisPoll && (int32_t)(view.lastValidReplyMs - sentMs) > 0;
 }
 
-static bool isForwardPhase(MasterState state) { return state == MASTER_FORWARD || state == MASTER_TRACKING; }
-
-MasterState Process::activePhase() const {
-  return (state_ == MASTER_STOPPING || state_ == MASTER_PAUSED) ? savedPhase_ : state_;
-}
-
-bool Process::inForwardPhase() const { return isForwardPhase(activePhase()); }
-
 bool Process::inCycle() const {
-  return state_ != MASTER_INITIALISING && state_ != MASTER_READY && state_ != MASTER_BENCH && state_ != MASTER_FAULT;
+  return state_ == MASTER_RUNNING || state_ == MASTER_STOPPING || state_ == MASTER_EJECTING || state_ == MASTER_PAUSED;
 }
 
-void Process::begin(const Calibration& calibration, const Options& options) {
+void Process::begin(const Calibration& calibration) {
   calibration_ = calibration;
-  options_ = options;
   fault_ = MASTER_FAULT_NONE;
   stopUnconfirmed_ = false;
+  counters_ = {0, 0, 0, 0};
   enterInitialising();
 }
 
 void Process::enterInitialising() {
   state_ = MASTER_INITIALISING;
+  resumeTo_ = MASTER_RUNNING;
   pending_.active = false;
   initialStopRequested_ = false;
-  restartPending_ = false;
-  resetCycle();
+  resetTracking();
 }
 
-void Process::resetCycle() {
-  savedPhase_ = MASTER_INITIALISING;
-  hasReedBaseline_ = false;
-  hasEntryBaseline_ = false;
-  hasApproachBaseline_ = false;
+void Process::resetTracking() {
+  tracking_ = false;
+  windowCount_ = 0;
+  ejectCount_ = 0;
   sweepSeen_ = false;
-  clearingWaitStarted_ = false;
 }
 
 void Process::sendMotion(ProcessOutput& output, char command, uint8_t expectedState, bool retryEachPoll,
@@ -114,8 +98,7 @@ void Process::enterFault(MasterFault reason, ProcessOutput& output, uint32_t now
   output.add(CONVEYOR_ADDRESS, COMMAND_STOP);
 }
 
-void Process::enterStopping(MasterState saved, ProcessOutput& output, uint32_t now) {
-  savedPhase_ = saved;
+void Process::enterStopping(ProcessOutput& output, uint32_t now) {
   state_ = MASTER_STOPPING;
   sendMotion(output, COMMAND_STOP, CONVEYOR_STOPPED, true, now);
 }
@@ -141,44 +124,16 @@ bool Process::checkFeedback(SlaveView& conveyor, SlaveView& sensing, ProcessOutp
   return false;
 }
 
-// The entry step baseline pairs the channel event with the conveyor reply from the same poll.
-void Process::updateBaselines(const SlaveView& conveyor, const SlaveView& sensing) {
-  if (!conveyor.repliedThisPoll || !sensing.repliedThisPoll) return;
-  if (hasReedBaseline_ && !hasEntryBaseline_ && (uint16_t)(sensing.channel1Edges - channel1Start_) > 0) {
-    hasEntryBaseline_ = true;
-    entryBaseline_ = conveyor.steps;
+// Belt state must match the phase whenever no command is in flight.
+bool Process::checkMotion(const SlaveView& conveyor, ProcessOutput& output, uint32_t now) {
+  if (pending_.active || !conveyor.fresh || conveyor.invalid) return false;
+  bool asExpected;
+  switch (state_) {
+    case MASTER_RUNNING: asExpected = conveyor.state == CONVEYOR_FORWARD; break;
+    case MASTER_READY:
+    case MASTER_PAUSED: asExpected = conveyor.state == CONVEYOR_STOPPED; break;
+    default: return false;
   }
-}
-
-Observation Process::observe(const SlaveView& conveyor, const SlaveView& sensing) const {
-  Observation seen;
-  seen.conveyorFresh = conveyor.fresh && conveyor.state != CONVEYOR_FAULT && !conveyor.invalid;
-  seen.sensingFresh = sensing.fresh && sensing.state != SENSING_FAULT && !sensing.invalid;
-  seen.conveyorStopped = seen.conveyorFresh && conveyor.state == CONVEYOR_STOPPED;
-  seen.conveyorForward = seen.conveyorFresh && conveyor.state == CONVEYOR_FORWARD;
-  seen.conveyorSweeping = seen.conveyorFresh && conveyor.state == CONVEYOR_SWEEPING;
-  seen.channelsClear = seen.sensingFresh && sensing.live == 0;
-  bool channel1Rose = hasReedBaseline_ && (uint16_t)(sensing.channel1Edges - channel1Start_) > 0;
-  bool channel2Rose = hasReedBaseline_ && (uint16_t)(sensing.channel2Edges - channel2Start_) > 0;
-  if (options_.singleChannelBench) channel2Rose = channel1Rose;
-  seen.arrived = channel1Rose;
-  seen.magnetic = channel1Rose && channel2Rose;
-  seen.channelOrderBad = channel2Rose && !channel1Rose;
-  seen.forwardOverdue = hasEntryBaseline_ && !seen.magnetic &&
-                        (conveyor.steps - entryBaseline_) > calibration_.forwardAllowanceSteps;
-  seen.approachDone = hasApproachBaseline_ && (conveyor.steps - approachBaseline_) >= calibration_.paddleSteps;
-  return seen;
-}
-
-// Runs in every cycle state, including STOPPING and PAUSED, before any operator command.
-bool Process::checkProgress(const Observation& seen, ProcessOutput& output, uint32_t now) {
-  if (inForwardPhase()) {
-    if (seen.channelOrderBad) { enterFault(MASTER_FAULT_CHANNEL_ORDER, output, now); return true; }
-    if (seen.forwardOverdue) { enterFault(MASTER_FAULT_MISSING_FORWARD, output, now); return true; }
-  }
-  if (pending_.active || !seen.conveyorFresh || state_ == MASTER_STOPPING || state_ == MASTER_EJECTING) return false;
-  bool expectedForward = isForwardPhase(state_) || state_ == MASTER_APPROACH;
-  bool asExpected = expectedForward ? seen.conveyorForward : seen.conveyorStopped;
   if (!asExpected) {
     enterFault(MASTER_FAULT_UNEXPECTED_MOTION, output, now);
     return true;
@@ -186,25 +141,72 @@ bool Process::checkProgress(const Observation& seen, ProcessOutput& output, uint
   return false;
 }
 
-void Process::startCycle(const SlaveView& conveyor, const SlaveView& sensing, ProcessOutput& output, uint32_t now) {
-  resetCycle();
-  hasReedBaseline_ = true;
-  channel1Start_ = sensing.channel1Edges;
-  channel2Start_ = sensing.channel2Edges;
-  startForward(observe(conveyor, sensing), output, now);
+bool Process::pushWindow(uint32_t steps) {
+  if (windowCount_ >= QUEUE_CAPACITY) return false;
+  windows_[windowCount_++] = steps;
+  return true;
 }
 
-void Process::startForward(const Observation& seen, ProcessOutput& output, uint32_t now) {
-  state_ = seen.arrived ? MASTER_TRACKING : MASTER_FORWARD;
-  sendMotion(output, COMMAND_GO, CONVEYOR_FORWARD, false, now);
+void Process::popWindow() {
+  for (uint8_t i = 1; i < windowCount_; i++) windows_[i - 1] = windows_[i];
+  if (windowCount_ > 0) windowCount_--;
 }
 
-void Process::startApproach(const SlaveView& conveyor, ProcessOutput& output, uint32_t now) {
-  if (!hasApproachBaseline_) {
-    hasApproachBaseline_ = true;
-    approachBaseline_ = conveyor.steps;
+bool Process::pushEject(uint32_t target) {
+  if (ejectCount_ >= QUEUE_CAPACITY) return false;
+  ejects_[ejectCount_++] = target;
+  return true;
+}
+
+void Process::popEject() {
+  for (uint8_t i = 1; i < ejectCount_; i++) ejects_[i - 1] = ejects_[i];
+  if (ejectCount_ > 0) ejectCount_--;
+}
+
+// Windows are in arrival order, so the oldest expires first.
+void Process::expireWindows(uint32_t steps) {
+  while (windowCount_ > 0 && steps - windows_[0] > calibration_.channelSpacingSteps) {
+    counters_.safe++;
+    popWindow();
   }
-  state_ = MASTER_APPROACH;
+}
+
+// Every channel 1 edge opens a presence window. A channel 2 edge inside the oldest window is a magnetic puck;
+// one with no window open is still magnetic, still ejected, and counted as unmatched.
+void Process::trackPucks(const SlaveView& conveyor, const SlaveView& sensing, ProcessOutput& output, uint32_t now) {
+  if (!conveyor.repliedThisPoll || !sensing.repliedThisPoll) return;
+  if (!tracking_) {
+    tracking_ = true;
+    lastChannel1Edges_ = sensing.channel1Edges;
+    lastChannel2Edges_ = sensing.channel2Edges;
+    return;
+  }
+  uint16_t arrivals = (uint16_t)(sensing.channel1Edges - lastChannel1Edges_);
+  uint16_t magnetics = (uint16_t)(sensing.channel2Edges - lastChannel2Edges_);
+  lastChannel1Edges_ = sensing.channel1Edges;
+  lastChannel2Edges_ = sensing.channel2Edges;
+  uint32_t steps = conveyor.steps;
+  for (uint16_t i = 0; i < arrivals; i++) {
+    if (!pushWindow(steps)) { enterFault(MASTER_FAULT_QUEUE_OVERFLOW, output, now); return; }
+  }
+  for (uint16_t i = 0; i < magnetics; i++) {
+    if (windowCount_ > 0) popWindow();
+    else counters_.unmatchedMagnetic++;
+    counters_.magnetic++;
+    if (!pushEject(steps + calibration_.paddleSteps)) { enterFault(MASTER_FAULT_QUEUE_OVERFLOW, output, now); return; }
+  }
+  expireWindows(steps);
+}
+
+bool Process::nextEject(uint32_t steps, uint32_t& remaining) const {
+  if (ejectCount_ == 0) return false;
+  uint32_t target = ejects_[0];
+  remaining = (int32_t)(target - steps) > 0 ? target - steps : 0;
+  return true;
+}
+
+void Process::startBelt(ProcessOutput& output, uint32_t now) {
+  state_ = MASTER_RUNNING;
   sendMotion(output, COMMAND_GO, CONVEYOR_FORWARD, false, now);
 }
 
@@ -215,68 +217,22 @@ void Process::startEject(ProcessOutput& output, uint32_t now) {
   sendMotion(output, COMMAND_EJECT, CONVEYOR_SWEEPING, false, now);
 }
 
-void Process::tickEjecting(const SlaveView& conveyor, const Observation& seen, ProcessOutput& output, uint32_t now) {
+void Process::tickEjecting(const SlaveView& conveyor, ProcessOutput& output, uint32_t now) {
   ConfirmResult result = confirm(conveyor, output, now);
   if (result == CONFIRM_TIMED_OUT) { enterFault(MASTER_FAULT_CONFIRM_TIMEOUT, output, now); return; }
   if (result == CONFIRM_DONE) sweepSeen_ = true;
   if (result == CONFIRM_WAITING) return;
-  if (seen.conveyorStopped && sweepSeen_) {
-    state_ = MASTER_CLEARING;
-    clearingWaitStarted_ = false;
-    tickClearing(seen, output, now);
+  bool stopped = conveyor.fresh && conveyor.state == CONVEYOR_STOPPED;
+  bool sweeping = conveyor.fresh && conveyor.state == CONVEYOR_SWEEPING;
+  if (stopped && sweepSeen_) {
+    popEject();
+    counters_.ejected++;
+    if (resumeTo_ == MASTER_PAUSED) state_ = MASTER_PAUSED;
+    else startBelt(output, now);
     return;
   }
   if (now - ejectSentMs_ >= SWEEP_TIMEOUT_MS) { enterFault(MASTER_FAULT_SWEEP_TIMEOUT, output, now); return; }
-  if (!seen.conveyorSweeping && !seen.conveyorStopped) enterFault(MASTER_FAULT_UNEXPECTED_MOTION, output, now);
-}
-
-void Process::finishStop(const Observation& seen, ProcessOutput& output, uint32_t now) {
-  if (inForwardPhase()) {
-    if (seen.arrived) savedPhase_ = MASTER_TRACKING;
-    state_ = seen.magnetic ? MASTER_WAIT_ACK : MASTER_PAUSED;
-    waitAckSinceMs_ = now;
-    return;
-  }
-  if (seen.approachDone) {
-    startEject(output, now);
-    return;
-  }
-  state_ = MASTER_PAUSED;
-}
-
-void Process::resume(const SlaveView& conveyor, const SlaveView& sensing, const Observation& seen,
-                     ProcessOutput& output, uint32_t now) {
-  (void)sensing;
-  if (!seen.conveyorStopped || !seen.sensingFresh) {
-    output.notice = NOTICE_IGNORED;
-    return;
-  }
-  output.notice = NOTICE_RESUMED;
-  if (inForwardPhase()) {
-    if (seen.magnetic) {
-      state_ = MASTER_WAIT_ACK;
-      waitAckSinceMs_ = now;
-    } else {
-      startForward(seen, output, now);
-    }
-    return;
-  }
-  if (seen.approachDone) startEject(output, now);
-  else startApproach(conveyor, output, now);
-}
-
-void Process::tickClearing(const Observation& seen, ProcessOutput& output, uint32_t now) {
-  if (!seen.channelsClear) {
-    if (!clearingWaitStarted_) {
-      clearingWaitStarted_ = true;
-      clearingWaitStartMs_ = now;
-    }
-    if (now - clearingWaitStartMs_ >= CHANNEL_CLEAR_GRACE_MS) enterFault(MASTER_FAULT_CHANNEL_HELD, output, now);
-    return;
-  }
-  state_ = MASTER_READY;
-  resetCycle();
-  restartPending_ = options_.autoRestart;
+  if (!sweeping && !stopped) enterFault(MASTER_FAULT_UNEXPECTED_MOTION, output, now);
 }
 
 void Process::tick(uint32_t now, SlaveView& conveyor, SlaveView& sensing, const OperatorCommand& operatorCommand,
@@ -285,6 +241,11 @@ void Process::tick(uint32_t now, SlaveView& conveyor, SlaveView& sensing, const 
   OperatorKind operatorKind = operatorCommand.kind;
 
   if (state_ == MASTER_FAULT) {
+    bool moving = conveyor.fresh && (conveyor.state == CONVEYOR_FORWARD || conveyor.state == CONVEYOR_REVERSE);
+    if (moving && !stopUnconfirmed_) {
+      stopUnconfirmed_ = true;
+      pending_.sentMs = now;
+    }
     if (stopUnconfirmed_) {
       bool atRest = conveyor.state == CONVEYOR_STOPPED || conveyor.state == CONVEYOR_FAULT;
       if (repliedAfter(conveyor, pending_.sentMs) && atRest) stopUnconfirmed_ = false;
@@ -307,9 +268,15 @@ void Process::tick(uint32_t now, SlaveView& conveyor, SlaveView& sensing, const 
   }
 
   if (checkFeedback(conveyor, sensing, output, now)) return;
-  if (inCycle()) updateBaselines(conveyor, sensing);
-  Observation seen = observe(conveyor, sensing);
-  if (inCycle() && checkProgress(seen, output, now)) return;
+  if (inCycle()) {
+    trackPucks(conveyor, sensing, output, now);
+    if (state_ == MASTER_FAULT) return;
+  }
+  if (checkMotion(conveyor, output, now)) return;
+
+  bool conveyorFresh = conveyor.fresh && !conveyor.invalid && conveyor.state != CONVEYOR_FAULT;
+  bool sensingFresh = sensing.fresh && !sensing.invalid && sensing.state != SENSING_FAULT;
+  bool conveyorStopped = conveyorFresh && conveyor.state == CONVEYOR_STOPPED;
 
   switch (state_) {
     case MASTER_INITIALISING: {
@@ -319,30 +286,21 @@ void Process::tick(uint32_t now, SlaveView& conveyor, SlaveView& sensing, const 
         return;
       }
       if (operatorKind != OPERATOR_NONE) output.notice = NOTICE_IGNORED;
-      if (!initialStopRequested_ || !seen.conveyorFresh || !seen.sensingFresh) {
+      if (!initialStopRequested_ || !conveyorFresh || !sensingFresh) {
         initialStopRequested_ = true;
         output.add(CONVEYOR_ADDRESS, COMMAND_STOP);
         if (output.notice == NOTICE_NONE) output.notice = NOTICE_INIT_WAITING;
         return;
       }
-      if (!seen.conveyorStopped) {
+      if (!conveyorStopped) {
         output.add(CONVEYOR_ADDRESS, COMMAND_STOP);
         return;
       }
-      if (!seen.channelsClear) {
-        if (output.notice == NOTICE_NONE) output.notice = NOTICE_INIT_CHANNELS_ACTIVE;
-        return;
-      }
       state_ = MASTER_READY;
-      resetCycle();
       return;
     }
 
     case MASTER_READY: {
-      if (seen.conveyorFresh && !seen.conveyorStopped) {
-        enterFault(MASTER_FAULT_UNEXPECTED_MOTION, output, now);
-        return;
-      }
       if (operatorKind == OPERATOR_BENCH) {
         state_ = MASTER_BENCH;
         output.notice = NOTICE_BENCH_ENTERED;
@@ -350,34 +308,26 @@ void Process::tick(uint32_t now, SlaveView& conveyor, SlaveView& sensing, const 
       }
       if (operatorKind == OPERATOR_START) {
         if (!calibration_.ready()) { output.notice = NOTICE_START_NOT_CALIBRATED; return; }
-        if (!seen.conveyorFresh || !seen.sensingFresh) { output.notice = NOTICE_START_NOT_READY; return; }
-        if (!seen.channelsClear) { output.notice = NOTICE_START_CHANNEL_ACTIVE; return; }
-        startCycle(conveyor, sensing, output, now);
+        if (!conveyorFresh || !sensingFresh) { output.notice = NOTICE_START_NOT_READY; return; }
+        resetTracking();
+        resumeTo_ = MASTER_RUNNING;
+        startBelt(output, now);
         return;
       }
-      if (operatorKind == OPERATOR_STOP) {
-        restartPending_ = false;
-        output.notice = NOTICE_STOP_ALREADY;
-        return;
-      }
+      if (operatorKind == OPERATOR_STOP) { output.notice = NOTICE_STOP_ALREADY; return; }
       if (operatorKind != OPERATOR_NONE) output.notice = NOTICE_IGNORED;
-      if (restartPending_ && calibration_.ready() && seen.conveyorFresh && seen.sensingFresh && seen.channelsClear) {
-        restartPending_ = false;
-        startCycle(conveyor, sensing, output, now);
-      }
       return;
     }
 
-    case MASTER_FORWARD:
-    case MASTER_TRACKING: {
-      if (seen.magnetic) { enterStopping(state_, output, now); return; }
-      if (operatorKind == OPERATOR_STOP) { enterStopping(state_, output, now); return; }
+    case MASTER_RUNNING: {
+      if (operatorKind == OPERATOR_STOP) { resumeTo_ = MASTER_PAUSED; enterStopping(output, now); return; }
       if (operatorKind != OPERATOR_NONE) output.notice = NOTICE_IGNORED;
       if (confirm(conveyor, output, now) == CONFIRM_TIMED_OUT) {
         enterFault(MASTER_FAULT_CONFIRM_TIMEOUT, output, now);
         return;
       }
-      if (seen.arrived) state_ = MASTER_TRACKING;
+      uint32_t remaining;
+      if (conveyorFresh && nextEject(conveyor.steps, remaining) && remaining == 0) startEject(output, now);
       return;
     }
 
@@ -386,48 +336,27 @@ void Process::tick(uint32_t now, SlaveView& conveyor, SlaveView& sensing, const 
       else if (operatorKind != OPERATOR_NONE) output.notice = NOTICE_IGNORED;
       ConfirmResult result = confirm(conveyor, output, now);
       if (result == CONFIRM_TIMED_OUT) { enterFault(MASTER_FAULT_STOP_UNCONFIRMED, output, now); return; }
-      if (result == CONFIRM_DONE) finishStop(seen, output, now);
-      return;
-    }
-
-    case MASTER_WAIT_ACK: {
-      bool autoAckDue = options_.autoAckMs > 0 && now - waitAckSinceMs_ >= options_.autoAckMs;
-      if (operatorKind == OPERATOR_ACK || autoAckDue) {
-        startApproach(conveyor, output, now);
-        return;
-      }
-      if (operatorKind == OPERATOR_STOP) output.notice = NOTICE_STOP_ALREADY;
-      else if (operatorKind != OPERATOR_NONE) output.notice = NOTICE_IGNORED;
-      return;
-    }
-
-    case MASTER_APPROACH: {
-      if (operatorKind == OPERATOR_STOP) { enterStopping(state_, output, now); return; }
-      if (operatorKind != OPERATOR_NONE) output.notice = NOTICE_IGNORED;
-      if (confirm(conveyor, output, now) == CONFIRM_TIMED_OUT) {
-        enterFault(MASTER_FAULT_CONFIRM_TIMEOUT, output, now);
-        return;
-      }
-      if (seen.approachDone) startEject(output, now);
+      if (result == CONFIRM_DONE) state_ = MASTER_PAUSED;
       return;
     }
 
     case MASTER_EJECTING: {
-      if (operatorKind == OPERATOR_STOP) output.notice = NOTICE_SWEEP_IN_PROGRESS;
+      if (operatorKind == OPERATOR_STOP) { resumeTo_ = MASTER_PAUSED; output.notice = NOTICE_SWEEP_IN_PROGRESS; }
       else if (operatorKind != OPERATOR_NONE) output.notice = NOTICE_IGNORED;
-      tickEjecting(conveyor, seen, output, now);
-      return;
-    }
-
-    case MASTER_CLEARING: {
-      if (operatorKind == OPERATOR_STOP) output.notice = NOTICE_STOP_ALREADY;
-      else if (operatorKind != OPERATOR_NONE) output.notice = NOTICE_IGNORED;
-      tickClearing(seen, output, now);
+      tickEjecting(conveyor, output, now);
       return;
     }
 
     case MASTER_PAUSED: {
-      if (operatorKind == OPERATOR_RESUME) { resume(conveyor, sensing, seen, output, now); return; }
+      if (operatorKind == OPERATOR_RESUME) {
+        if (!conveyorStopped || !sensingFresh) { output.notice = NOTICE_IGNORED; return; }
+        output.notice = NOTICE_RESUMED;
+        resumeTo_ = MASTER_RUNNING;
+        uint32_t remaining;
+        if (nextEject(conveyor.steps, remaining) && remaining == 0) startEject(output, now);
+        else startBelt(output, now);
+        return;
+      }
       if (operatorKind == OPERATOR_STOP) output.notice = NOTICE_STOP_ALREADY;
       else if (operatorKind != OPERATOR_NONE) output.notice = NOTICE_IGNORED;
       return;
@@ -440,9 +369,7 @@ void Process::tick(uint32_t now, SlaveView& conveyor, SlaveView& sensing, const 
 
 uint8_t Process::conveyorTarget() const {
   switch (state_) {
-    case MASTER_FORWARD:
-    case MASTER_TRACKING:
-    case MASTER_APPROACH: return CONVEYOR_FORWARD;
+    case MASTER_RUNNING: return CONVEYOR_FORWARD;
     case MASTER_EJECTING: return CONVEYOR_SWEEPING;
     default: return CONVEYOR_STOPPED;
   }
@@ -452,29 +379,10 @@ AndonColour Process::andon() const {
   switch (state_) {
     case MASTER_FAULT: return ANDON_RED;
     case MASTER_INITIALISING: return ANDON_AMBER_BLINK;
-    case MASTER_WAIT_ACK:
     case MASTER_PAUSED: return ANDON_AMBER;
-    case MASTER_FORWARD:
-    case MASTER_TRACKING:
+    case MASTER_RUNNING:
     case MASTER_STOPPING:
-    case MASTER_APPROACH:
-    case MASTER_EJECTING:
-    case MASTER_CLEARING: return ANDON_GREEN;
+    case MASTER_EJECTING: return ANDON_GREEN;
     default: return ANDON_OFF;
   }
-}
-
-bool Process::travel(uint32_t steps, uint32_t& delta, uint32_t& limit) const {
-  MasterState phase = activePhase();
-  if (phase == MASTER_TRACKING && hasEntryBaseline_) {
-    delta = steps - entryBaseline_;
-    limit = calibration_.forwardAllowanceSteps;
-    return true;
-  }
-  if (phase == MASTER_APPROACH && hasApproachBaseline_) {
-    delta = steps - approachBaseline_;
-    limit = calibration_.paddleSteps;
-    return true;
-  }
-  return false;
 }

@@ -8,10 +8,10 @@
 
 static const float STEPS_PER_MM = 10;
 static const float CHANNEL1_MM = 100;
-static const float CHANNEL2_MM = 160;
+static const float CHANNEL2_MM = 130;
 static const float HALL_SIGMA_MM = 4.7f;   // field bump width: about +/-6 mm above the threshold
 static const float HALL_PEAK = 60;         // counts at the sensor's closest approach
-static const float LIGHT_SHADE_REACH_MM = 15;      // the puck shades the LDR within this distance of ch2
+static const float LIGHT_SHADE_REACH_MM = 6;      // the puck shades the LDR within this distance of ch2
 static const uint16_t SENSING_SAMPLE_MS = 2;
 static const uint16_t DEBOUNCE_MS = 20;
 static const uint32_t SWEEP_DURATION_MS = 2800;
@@ -58,9 +58,8 @@ struct World {
     hall1.begin(HALL_CONFIG); hall2.begin(HALL_CONFIG); lightSensor.begin(LIGHT_SENSOR_CONFIG);
     conveyorView.begin(SLAVE_CONVEYOR);
     sensingView.begin(SLAVE_SENSING);
-    Calibration calibration = {900, 1500};
-    Options options = {0, false, false};
-    master.begin(calibration, options);
+    Calibration calibration = {450, 1500};
+    master.begin(calibration);
     puckMm = startMm; puckMagnetic = magnetic; polarity = magnetPolarity; useGate = gate; noiseAmplitude = noiseCounts;
     masterPolls = true; hall1PulledLow = false; strayCounts = 0;
     lastReadMs = lastSampleMs = lastPollMs = 0;
@@ -78,16 +77,16 @@ struct World {
     return clampToAdcRange(value + randomNoise(noiseAmplitude));
   }
   uint16_t lightSensorRaw() const {
-    float shadeCounts = (!puckEjected && fabsf(puckMm - CHANNEL2_MM) < LIGHT_SHADE_REACH_MM) ? -150 : 0;  // any puck, magnetic or not
+    float shadeCounts = (!puckEjected && fabsf(puckMm - CHANNEL1_MM) < LIGHT_SHADE_REACH_MM) ? -150 : 0;  // any puck, magnetic or not
     return clampToAdcRange(LIGHT_REST + shadeCounts + randomNoise(noiseAmplitude));
   }
 
   void sampleSensing() {
-    hall1.sample(hall1PulledLow ? 0 : hallRaw(CHANNEL1_MM, 0));
-    hall2.sample(hallRaw(CHANNEL2_MM, strayCounts));
+    hall1.sample(hall1PulledLow ? 0 : hallRaw(CHANNEL2_MM, strayCounts));
+    hall2.sample(REST);
     lightSensor.sample(lightSensorRaw());
-    sensingLogic.sample(now, hall1.active(), fusedClosed(hall2.active(), lightSensor.active(), useGate));
-    if (hall1.fault() || hall2.fault() || (useGate && lightSensor.fault())) sensingLogic.raiseLocalFault();
+    sensingLogic.sample(now, lightSensor.active(), hall1.active());
+    if (hall1.fault() || lightSensor.fault()) sensingLogic.raiseLocalFault();
   }
 
   void poll(OperatorKind kind) {
@@ -143,78 +142,62 @@ void tearDown() {}
 
 #define ASSERT_STATE(w, s) TEST_ASSERT_EQUAL_STRING(masterStateName(s), masterStateName((w).master.state()))
 
-static void runFullCycle(World& world) {
+static void runOneMagneticPuck(World& world) {
   TEST_ASSERT_TRUE(world.runUntil(MASTER_READY, 1000));
   world.operate(OPERATOR_START);
-  TEST_ASSERT_TRUE(world.runUntil(MASTER_TRACKING, 2000));
-  TEST_ASSERT_TRUE(world.runUntil(MASTER_WAIT_ACK, 2000));
-  TEST_ASSERT_EQUAL(CONVEYOR_STOPPED, world.conveyorLogic.state());
+  TEST_ASSERT_TRUE(world.runUntil(MASTER_EJECTING, 30000));
+  TEST_ASSERT_EQUAL(1, world.sensingLogic.channel1Edges());
   TEST_ASSERT_EQUAL(1, world.sensingLogic.channel2Edges());
-  world.operate(OPERATOR_ACK);
-  TEST_ASSERT_TRUE(world.runUntil(MASTER_EJECTING, 20000));
-  TEST_ASSERT_TRUE(world.runUntil(MASTER_READY, 5000));
+  TEST_ASSERT_EQUAL(1, world.master.counters().magnetic);
+  TEST_ASSERT_EQUAL(0, world.master.counters().safe);
+  TEST_ASSERT_TRUE(world.runUntil(MASTER_RUNNING, 5000));
   TEST_ASSERT_TRUE(world.puckEjected);
-  TEST_ASSERT_EQUAL(CONVEYOR_STOPPED, world.conveyorLogic.state());
   TEST_ASSERT_EQUAL(MASTER_FAULT_NONE, world.master.fault());
   TEST_ASSERT_EQUAL(SENSING_OK, world.sensingLogic.state());
 }
 
-void test_hall_front_end_full_cycle() {
+void test_hall_front_end_sorts_a_magnetic_puck() {
   World world; world.begin(20, true);
-  runFullCycle(world);
+  runOneMagneticPuck(world);
 }
 
-void test_reversed_magnet_polarity_full_cycle() {
+void test_reversed_magnet_polarity() {
   World world; world.begin(20, true, -1);
-  runFullCycle(world);
+  runOneMagneticPuck(world);
 }
 
-void test_full_cycle_with_noise_across_seeds() {
+void test_magnetic_puck_with_noise_across_seeds() {
   for (uint32_t seed = 1; seed <= 8; seed++) {
     World world; world.begin(20, true, (seed % 2) ? 1 : -1, false, 4, seed * 7919);
-    runFullCycle(world);
+    runOneMagneticPuck(world);
   }
 }
 
-void test_full_cycle_with_ldr_gate_enabled() {
-  World world; world.begin(20, true, 1, true);
-  runFullCycle(world);
-}
-
-void test_non_magnetic_puck_runs_until_operator_stop() {
+void test_non_magnetic_puck_is_counted_safe() {
   World world; world.begin(20, false);
   world.runUntil(MASTER_READY, 1000);
   world.operate(OPERATOR_START);
   world.runFor(20000);
-  ASSERT_STATE(world, MASTER_FORWARD);
-  TEST_ASSERT_EQUAL(0, world.sensingLogic.channel1Edges());
+  ASSERT_STATE(world, MASTER_RUNNING);
+  TEST_ASSERT_EQUAL(1, world.sensingLogic.channel1Edges());
   TEST_ASSERT_EQUAL(0, world.sensingLogic.channel2Edges());
+  TEST_ASSERT_EQUAL(1, world.master.counters().safe);
+  TEST_ASSERT_EQUAL(0, world.master.counters().magnetic);
   TEST_ASSERT_EQUAL(MASTER_FAULT_NONE, world.master.fault());
 }
 
-static void injectTransientStrayField(World& world) {
+void test_stray_field_is_ejected_as_unmatched_not_faulted() {
+  World world; world.begin(20, false);
   world.runUntil(MASTER_READY, 1000);
   world.operate(OPERATOR_START);
-  world.runFor(500);          // puck is still well short of the station
+  world.runFor(500);
   world.strayCounts = 40;
   world.runFor(300);
   world.strayCounts = 0;
-  world.runFor(3000);         // the non-magnetic puck then passes the station normally
-}
-
-void test_stray_field_faults_master_without_gate() {
-  World world; world.begin(20, false, 1, false);
-  injectTransientStrayField(world);
-  ASSERT_STATE(world, MASTER_FAULT);
-  TEST_ASSERT_EQUAL(MASTER_FAULT_CHANNEL_ORDER, world.master.fault());
-}
-
-void test_stray_field_ignored_with_gate() {
-  World world; world.begin(20, false, 1, true);
-  injectTransientStrayField(world);
-  ASSERT_STATE(world, MASTER_FORWARD);
-  TEST_ASSERT_EQUAL(0, world.sensingLogic.channel2Edges());
+  world.runFor(3000);
   TEST_ASSERT_EQUAL(MASTER_FAULT_NONE, world.master.fault());
+  TEST_ASSERT_EQUAL(1, world.master.counters().unmatchedMagnetic);
+  TEST_ASSERT_EQUAL(1, world.master.counters().magnetic);
 }
 
 void test_hall_output_pulled_to_rail_faults_and_stops_the_belt() {
@@ -246,13 +229,11 @@ void test_contact_loss_clears_when_polling_resumes() {
 
 int main(int, char**) {
   UNITY_BEGIN();
-  RUN_TEST(test_hall_front_end_full_cycle);
-  RUN_TEST(test_reversed_magnet_polarity_full_cycle);
-  RUN_TEST(test_full_cycle_with_noise_across_seeds);
-  RUN_TEST(test_full_cycle_with_ldr_gate_enabled);
-  RUN_TEST(test_non_magnetic_puck_runs_until_operator_stop);
-  RUN_TEST(test_stray_field_faults_master_without_gate);
-  RUN_TEST(test_stray_field_ignored_with_gate);
+  RUN_TEST(test_hall_front_end_sorts_a_magnetic_puck);
+  RUN_TEST(test_reversed_magnet_polarity);
+  RUN_TEST(test_magnetic_puck_with_noise_across_seeds);
+  RUN_TEST(test_non_magnetic_puck_is_counted_safe);
+  RUN_TEST(test_stray_field_is_ejected_as_unmatched_not_faulted);
   RUN_TEST(test_hall_output_pulled_to_rail_faults_and_stops_the_belt);
   RUN_TEST(test_contact_loss_clears_when_polling_resumes);
   return UNITY_END();

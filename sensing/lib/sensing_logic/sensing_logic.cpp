@@ -11,6 +11,7 @@ void SensingLogic::begin(uint16_t debounceMs) {
   channel2Edges_ = 0;
   channel1Level_ = 0;
   channel2Level_ = 0;
+  localFault_ = false;
 }
 
 // Returns true on a closing edge of the debounced level.
@@ -37,12 +38,17 @@ void SensingLogic::serviceWatchdog(bool contactLost) {
     state_ = SENSING_FAULT;
     fault_ = FAULT_CONTACT_LOST;
   } else if (!contactLost && state_ == SENSING_FAULT && fault_ == FAULT_CONTACT_LOST) {
-    state_ = SENSING_OK;
-    fault_ = FAULT_NONE;
+    if (localFault_) {
+      fault_ = FAULT_LOCAL;
+    } else {
+      state_ = SENSING_OK;
+      fault_ = FAULT_NONE;
+    }
   }
 }
 
 void SensingLogic::raiseLocalFault() {
+  localFault_ = true;
   if (state_ != SENSING_FAULT) {
     state_ = SENSING_FAULT;
     fault_ = FAULT_LOCAL;
