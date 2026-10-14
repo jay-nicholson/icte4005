@@ -50,10 +50,18 @@ class SlaveLink {
   }
 
  private:
+  // A command is the ASCII byte followed by its bitwise complement; anything else is ignored.
   static void onReceive(int count) {
-    int last = 0;
-    while (Wire.available()) last = Wire.read();
-    if (count == 1) instance_->pendingCommand_ = (char)last;
+    uint8_t first = 0;
+    uint8_t second = 0;
+    uint8_t index = 0;
+    while (Wire.available()) {
+      uint8_t value = (uint8_t)Wire.read();
+      if (index == 0) first = value;
+      if (index == 1) second = value;
+      index++;
+    }
+    if (count == 2 && second == (uint8_t)~first) instance_->pendingCommand_ = (char)first;
   }
 
   static void onRequest() {

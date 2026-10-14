@@ -20,7 +20,7 @@ No channel activity before arrival is normal. There is no no-detection deadline 
 
 ## Wire format
 
-The master initiates every transaction. A command is exactly one ASCII byte, without newline or NUL. Status is a separate read. Addresses are 7-bit. Unknown commands, wrong-length writes and failed guards have no effect. An ACK confirms delivery, not action completion. Confirm actions by polling.
+The master initiates every transaction. A command is two bytes: the ASCII command byte followed by its bitwise complement. A slave ignores any write that is not exactly that pair, so a noise burst on the bus cannot form a command. Status is a separate read. Addresses are 7-bit. Unknown commands, writes without a matching complement and failed guards have no effect. An ACK confirms delivery, not action completion. Confirm actions by polling.
 
 | Board | Address | Reply length | State byte values |
 | --- | --- | --- | --- |
@@ -52,7 +52,7 @@ Counters only increase and wrap naturally. The master compares them with saved b
 | `s` | Stop issuing steps. STOPPED, FORWARD or REVERSE → STOPPED. SWEEPING and FAULT: ignore. |
 | `e` | STOPPED or FORWARD → SWEEPING: stop the belt and run one paddle sweep out and back. REVERSE, SWEEPING or FAULT: ignore. Back to STOPPED when the paddle has returned. |
 
-A direction change requires confirmed STOPPED first. The master never sends `b` in v3; it stays for bench use. No speed command exists. Standalone Serial bench controls are ignored while a master is in contact, so they cannot compete with master commands.
+A direction change requires confirmed STOPPED first. The master never sends `b` in v3; it stays for bench use. No speed command exists. Standalone Serial bench controls must not compete with master commands.
 
 ## Slave watchdog and faults
 

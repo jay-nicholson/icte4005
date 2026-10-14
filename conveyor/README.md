@@ -30,7 +30,7 @@ A step is emitted only when `motor()` asks for one, and every emitted half-step 
 
 ## Bench keys
 
-Serial at 9600. `g`, `b`, `s` and `e` send the same commands the master sends and pass the same guards. `c` runs exactly 4096 half-steps then stops; measure the travel and set `MM_PER_HALF_STEP` to travel in millimetres divided by 4096. Bench keys are ignored while a master is polling the board, so they cannot interfere with a cycle; disconnect the bus or stop the master to use them.
+Serial at 9600. `g`, `b`, `s` and `e` send the same commands the master sends and pass the same guards. `c` runs exactly 4096 half-steps then stops; measure the travel and set `MM_PER_HALF_STEP` to travel in millimetres divided by 4096. Do not type bench keys while the master is running a cycle; the master faults on motion it did not command.
 
 ## States keyed to commands
 

@@ -58,7 +58,8 @@ static OperatorCommand takeOperatorCommand() {
 
 static void printSendResultOnChange(uint8_t address, char command, bool acknowledged, bool rawSend) {
   bool& failed = (address == CONVEYOR_ADDRESS) ? conveyorAckFailed : sensingAckFailed;
-  if (rawSend || acknowledged == failed) printSendResult(address, command, acknowledged);
+  bool repeatedFailure = !acknowledged && failed;
+  if (rawSend || !repeatedFailure) printSendResult(address, command, acknowledged);
   failed = !acknowledged;
 }
 

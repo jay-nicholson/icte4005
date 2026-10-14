@@ -16,6 +16,7 @@ static bool timedOut() {
 bool wireSend(uint8_t address, char command) {
   Wire.beginTransmission(address);
   Wire.write((uint8_t)command);
+  Wire.write((uint8_t)~command);
   uint8_t returnCode = Wire.endTransmission(true);
   if (timedOut()) return false;
   return returnCode == 0;

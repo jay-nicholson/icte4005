@@ -128,12 +128,13 @@ static SlaveLink link;
 static uint32_t lastPublishMs = 0;
 static uint32_t lastPrintMs = 0;
 
-// Bench keys work only while no master is polling, so stray Serial input cannot drive the belt during a cycle.
-static void serviceBenchSerial(uint32_t now) {
+// Bench keys pass the same guards as master commands. Do not type them during a cycle.
+static void serviceBenchSerial() {
   while (Serial.available()) {
     char key = (char)Serial.read();
-    if (link.masterInContact(now)) continue;
     if (key == COMMAND_GO || key == COMMAND_BACK || key == COMMAND_STOP || key == COMMAND_EJECT) {
+      Serial.print(F("serial key: "));
+      Serial.println(key);
       logic.command(key);
     } else if (key == 'c') {
       calibrationRemaining = CALIBRATION_HALF_STEPS;
@@ -160,8 +161,12 @@ void setup() {
 void loop() {
   uint32_t now = millis();
   char command = link.takeCommand();
-  if (command) logic.command(command);
-  serviceBenchSerial(now);
+  if (command) {
+    Serial.print(F("bus command: "));
+    Serial.println(command);
+    logic.command(command);
+  }
+  serviceBenchSerial();
   logic.serviceWatchdog(link.contactLost(now));
   motorService(logic.motor(), logic);
 #if EJECTOR_ENABLED
